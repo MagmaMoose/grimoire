@@ -1,0 +1,54 @@
+# Org Brimyr quality gate, consumed as the Brimyr MARKETPLACE ACTION. Patch coverage
+# on the pull request's own diff — see MagmaMoose/brimyr for the gate's semantics.
+#
+# No checkout step: the action does its own, at fetch-depth 0, because patch coverage
+# needs the merge base. A shallow clone silently measures the wrong diff.
+name: Quality
+
+on:
+  pull_request:
+
+# The security.yml lesson, applied from the start. A superseded run is worse than
+# useless here: it finishes after the push that fixed it and comments a coverage
+# figure for a commit that no longer exists (MagmaMoose/dunmir#157).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # The one consolidated patch-coverage comment, updated in place rather than stacked.
+  pull-requests: write
+  # Brimyr exchanges an OIDC token at its broker so that comment is authored by
+  # Brimyr[bot] rather than github-actions[bot]. WITHOUT THIS THE RUNNER CANNOT
+  # REQUEST A TOKEN AT ALL, and the broker client fails SOFT and SILENTLY: it falls
+  # back to the job token, so the comment still posts and only the byline changes.
+  # That is precisely the shape of the gap that hid the same omission on every
+  # Chargate consumer in the org (MagmaMoose/caldrith#71), so it is set here from the
+  # first day rather than discovered from a byline months later.
+  #
+  # kics-scan ignore-line: KICS reads the literal `id-token: write` as
+  # "Passwords And Secrets - Generic Token" (baee238e-...), exactly as it does in
+  # security.yml. Without the suppression every repo gains a new finding.
+  # kics-scan ignore-line
+  id-token: write
+
+jobs:
+  # The job name IS the check-run context. `brimyr`, to match `chargate` and
+  # `diatreme` — and it is the context the ruleset would name if this is ever made
+  # required, so it must not be renamed or turned into a matrix.
+  brimyr:
+    # Same routing as the rest of the fleet (`runs_on`), NOT Chargate's amd64 pin:
+    # Brimyr runs the repo's own test suite and has no architecture constraint.
+    runs-on: ubuntu-latest
+    steps:
+      # v1.9.5 IS THE FLOOR, not just the current release: it is the first
+      # version in which a repo with no detectable test suite passes instead of
+      # exiting 2 (MagmaMoose/brimyr#54). Anything older turns this workflow into
+      # a permanently red check on every repo that has nothing to test.
+      - uses: magmamoose/brimyr@2bb66c503fe7cda6a0cf9f29f5edc0082824a8af # v1.9.5
+        with:
+          # `threshold` is deliberately absent: 80 is the action's own default, and
+          # naming it here would be a second place to keep in sync with the tool.
+          pr_comment: 'true'
+          token_broker_url: https://broker-brimyr.magmamoose.com

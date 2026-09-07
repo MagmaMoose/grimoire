@@ -1,0 +1,110 @@
+# Chargate/KICS suppression (reviewed false positive, not a vulnerability):
+#   baee238e... Passwords And Secrets - Generic Token misfires on the required
+#   `id-token: write` GitHub OIDC permission key below — no secret is present.
+# kics-scan disable=baee238e-1921-4801-9c3f-79ae1d7b2cbc
+name: Release
+
+# Diatreme release workflow (one image-aware template for the whole org).
+#
+# Detects a container build (docker-bake.hcl / Dockerfile):
+#   - pull_request: image repos run `mode: ci` -> BUILD + push a pr-<N> image to
+#     GHCR, so the build is verified BEFORE merge. Non-image repos no-op (the
+#     required `diatreme` check passes trivially).
+#   - push to the default branch: `mode: release` -> version + GitHub Release;
+#     image repos also promote the image.
+#
+# versioning-tool defaults to gitversion (language-agnostic). Per-repo overrides:
+#   - Python: versioning-tool: semantic-release-python (+ a pyproject config).
+#   - Node:   versioning-tool: semantic-release-npm.
+#   - Non-`main` default branch (e.g. master): set on.push.branches to match.
+#
+# All actions are SHA-pinned (Chargate's pre-commit hook enforces this); the
+# trailing `# vX.Y.Z` comment tracks the tag each pinned SHA corresponds to.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md', 'docs/**', 'mkdocs.yml', 'LICENSE', '.gitignore']
+  workflow_dispatch:
+
+permissions:
+  contents: write     # version bump + tag on release
+  id-token: write     # OIDC for the Diatreme public-app token broker
+  packages: write     # push the PR/release container image to GHCR
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  diatreme:
+    # Same visibility-based routing as security.yml — see `template_vars` at the
+    # top of settings.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: detect
+        shell: bash
+        # image_name is set only when the repo builds a container image; Diatreme
+        # gates all image steps on image_name != '', so non-image repos no-op.
+        run: |
+          if [ -f docker-bake.hcl ] || [ -f Dockerfile ]; then
+            echo "image_name=${{ github.event.repository.name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_name=" >> "$GITHUB_OUTPUT"
+          fi
+      # PR: verify the image builds (image repos only).
+      - if: github.event_name == 'pull_request' && steps.detect.outputs.image_name != ''
+        uses: magmamoose/diatreme@79056f54fdfba54c0b260ffa371df14b94f1a8e6 # v2.8.0
+        with:
+          mode: ci
+          image_name: ${{ steps.detect.outputs.image_name }}
+      # Default-branch push (or manual dispatch): version + release.
+      - id: release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: magmamoose/diatreme@79056f54fdfba54c0b260ffa371df14b94f1a8e6 # v2.8.0
+        with:
+          mode: release
+          versioning-tool: gitversion
+          environment: prod
+          environments: '["prod"]'
+          prerelease-identifiers: '{}'
+          image_name: ${{ steps.detect.outputs.image_name }}
+      # Keep the floating major tag (v1, v2, ...) on the newest stable release, so
+      # `uses: owner/repo@v2` means something. Nothing moved it before: chargate's
+      # `v2` was set once and sat on v2.11.1 while the repo shipped v2.11.28, and
+      # Chargate's own pin hook faithfully wrote `# v2.11.1` beside every SHA it
+      # resolved from it. Diatreme moves its own major tag from a bespoke step in
+      # its own release.yaml, which is why it is in `skip_repos` above.
+      #
+      # Scoped by `hashFiles` to repos that publish an action, because only those
+      # are consumed by ref. Everything else keeps a clean tag list.
+      #
+      # Prereleases never move it: a floating major pointing at an rc would ship
+      # one to every consumer pinned on the major. Pushed with the checkout's
+      # GITHUB_TOKEN (`contents: write` above), which deliberately triggers no
+      # workflows — a retag must not start another release.
+      - name: Update floating major tag
+        if: >-
+          steps.release.outputs.released == 'true'
+          && !contains(steps.release.outputs.version, '-')
+          && hashFiles('action.yml', 'action.yaml') != ''
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          # `tag` carries whatever prefix the repo uses (v1.2.3, pkg-v1.2.3), so
+          # recover it by stripping the version off the end rather than assuming `v`.
+          prefix="${RELEASE_TAG%"${RELEASE_VERSION}"}"
+          major_tag="${prefix}${RELEASE_VERSION%%.*}"
+          # Fetch just the tag Diatreme pushed: the checkout is shallow, and
+          # `--tags` on a shallow clone drags in far more than one ref needs.
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          target="$(git rev-list -n 1 "${RELEASE_TAG}")"
+          # Lightweight on purpose — no annotation, so no committer identity and
+          # nothing for a repo-level `tag.gpgSign` to try to sign.
+          git tag -f "${major_tag}" "${target}"
+          git push origin "refs/tags/${major_tag}" --force
+          echo "${major_tag} -> ${target} (${RELEASE_TAG})"
