@@ -1,0 +1,43 @@
+site_name: Transcribe
+site_description: Local, open-source meeting notes for macOS
+site_author: Caleb Sargeant
+repo_url: https://github.com/CalebSargeant/transcribe
+repo_name: CalebSargeant/transcribe
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: indigo
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: indigo
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.expand
+    - toc.follow
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Architecture: architecture.md
+  - Daemon: daemon.md
+  - Release: release.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      use_pygments: true
+  - pymdownx.superfences
+  - tables
+  - toc:
+      permalink: true
