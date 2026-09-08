@@ -201,6 +201,8 @@ transcribe autorecord               # record meetings automatically via OBS
 transcribe setup-autorecord         # install the auto-record launchd agent
 transcribe menubar                  # menu bar app with a manual override
 transcribe mic                      # show inputs, cameras, and whether it would record
+transcribe voicememos               # list recent Voice Memos recordings
+transcribe voicememos --import      # import Voice Memos through the notes pipeline
 ```
 
 ## How the pieces work

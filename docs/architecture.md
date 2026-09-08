@@ -284,6 +284,8 @@ src/transcribe/
 ├── links.py         # resolves a linkable URL for a destination folder
 ├── slack.py         # Slack webhook / bot-token notifications
 ├── gdrive.py        # optional Google Drive folder URL resolution
+├── voicememos.py    # read/import recordings from the macOS Voice Memos app
+├── permissions.py   # identify the responsible .app for macOS permission prompts
 └── tls.py           # TLS CA bundle fixup for frozen binaries
 ```
 
