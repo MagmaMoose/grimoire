@@ -1,0 +1,77 @@
+# Org Chargate security gate (MegaLinter-backed, net-new PR-diff gating), consumed
+# as the Chargate MARKETPLACE ACTION. It gates on net-new findings on pull requests.
+#
+# pull_request only: the push-to-default baseline scan was dropped. Every merge to
+# the default branch (including the Caldrith-managed and Diatreme version-bump/tag
+# commits) otherwise kicks off a full ~15-min MegaLinter run — the single biggest
+# source of wasted CI. PR-time net-new gating is retained; the default-branch
+# baseline SARIF on the Security tab is simply no longer refreshed (it needs GHAS on
+# private repos anyway, and the code_scanning ruleset gate is CodeQL, not chargate).
+name: Security
+
+on:
+  pull_request:
+
+# A superseded run MUST die. Chargate takes ~15 minutes, and its findings are a
+# statement about the ONE commit it scanned: without this, a push mid-run leaves the
+# old run alive to post inline "net-new finding" comments minutes AFTER the commit
+# that fixed them, against a SHA that is no longer the head. GitHub still renders
+# those threads on a live line, so nothing marks them outdated, and Nievah's triage
+# re-fixed the same line every round while each of its pushes superseded the next
+# scan (MagmaMoose/dunmir#157: DS440011 "fixed" twice, back both times).
+#
+# Chargate's OWN security.yml has carried this since forever; this template did not,
+# and chargate is skip_repos'd out of it — the same shape as the `id-token` gap in
+# MagmaMoose/caldrith#71, where the one repo that looked healthy was the one repo
+# this file never reached. Kept byte-identical to chargate's so they cannot drift.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+  # codeql-action/upload-sarif (and Chargate's status telemetry) read this run's
+  # metadata via GET /actions/runs/{id}; without actions:read that 403s with
+  # "Resource not accessible by integration" and the SARIF upload errors.
+  actions: read
+  # Chargate exchanges an OIDC token at its broker so PR comments are authored by
+  # Chargate[bot] rather than github-actions[bot]. WITHOUT THIS THE RUNNER CANNOT
+  # REQUEST A TOKEN AT ALL, and the only symptom is the byline on a comment that
+  # still gets posted:
+  #
+  #   Chargate[bot] token unavailable (missing 'id-token: write');
+  #   PR comments fall back to github-actions[bot].
+  #
+  # request-app-token.sh is fail-soft by design — on any error it emits an empty
+  # token and exits 0 — so there is no failed step and no red check to notice. It
+  # was missing from every consumer in the org (see MagmaMoose/caldrith#71);
+  # chargate's own repo looked healthy the whole time only because it sets this on
+  # its own security.yml, which this template is skip_repos'd out of.
+  #
+  # kics-scan ignore-line: KICS reads the literal `id-token: write` as
+  # "Passwords And Secrets - Generic Token" (baee238e-...). Chargate's own workflows
+  # carry the same suppression; without it every repo gains a new finding.
+  # kics-scan ignore-line
+  id-token: write
+
+jobs:
+  chargate:
+    # Runner routing, rendered by visibility — see `template_vars` at the top of
+    # settings.yml. `runs_on_amd64`, NOT `runs_on`: Chargate is amd64-only in
+    # practice (arm64 runs MegaLinter's per-linter images sequentially and the job
+    # never finishes — see the note on the var). Public repos get a literal
+    # `ubuntu-latest` (GitHub-hosted minutes are free on public repos, and this
+    # keeps them out of the self-hosted queue); private/internal repos get the
+    # amd64-pinned expression,
+    # so blanking that variable is still the instant escape hatch if the
+    # self-hosted runners bomb out.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: magmamoose/chargate@13239654c6395322b0698720f0f7cfc4c2f7e40e # v2.11.10
+        with:
+          defectdojo_url: ${{ vars.MM_DEFECTDOJO_URL }}
+          defectdojo_token: ${{ secrets.MM_DEFECTDOJO_API_KEY }}
+          dependency_track_url: ${{ vars.MM_DEPENDENCY_TRACK_URL }}
+          dependency_track_api_key: ${{ secrets.MM_DEPENDENCY_TRACK_API_KEY }}
