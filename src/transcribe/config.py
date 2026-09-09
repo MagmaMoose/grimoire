@@ -17,6 +17,9 @@ DEFAULT_CONFIG = {
     "llm_provider": "claude",
     # Anthropic (Claude) settings. Default is the current Claude Haiku 4.5.
     "anthropic_api_key": "",
+    # Bearer token alternative to anthropic_api_key, for OAuth-issued tokens.
+    # An anthropic_api_key starting with "sk-ant-oat" is treated as one too.
+    "anthropic_auth_token": "",
     "anthropic_model": "claude-haiku-4-5-20251001",
     # OpenAI settings (used when llm_provider is "openai").
     "openai_api_key": "",

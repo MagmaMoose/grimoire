@@ -315,3 +315,58 @@ def test_complete_json_returns_parsed_object(fake_openai, base_config):
 def test_complete_json_without_api_key_returns_none(base_config):
     base_config["anthropic_api_key"] = ""
     assert complete_json(base_config, "s", "u", {"type": "object"}) is None
+
+
+# --- bearer-token credentials ----------------------------------------------
+
+
+def test_api_key_for_returns_plain_key_unchanged():
+    cfg = {"llm_provider": "claude", "anthropic_api_key": "sk-ant-api-abc"}
+    assert llm.api_key_for(cfg) == "sk-ant-api-abc"
+    assert llm.auth_token_for(cfg) == ""
+
+
+def test_oauth_shaped_api_key_is_treated_as_a_bearer_token():
+    cfg = {"llm_provider": "claude", "anthropic_api_key": "sk-ant-oat-abc"}
+    assert llm.api_key_for(cfg) == ""
+    assert llm.auth_token_for(cfg) == "sk-ant-oat-abc"
+
+
+def test_explicit_auth_token_wins_over_api_key():
+    cfg = {
+        "llm_provider": "claude",
+        "anthropic_api_key": "sk-ant-api-abc",
+        "anthropic_auth_token": "bearer-xyz",
+    }
+    assert llm.auth_token_for(cfg) == "bearer-xyz"
+
+
+def test_is_configured_accepts_either_credential():
+    assert llm.is_configured({"llm_provider": "claude", "anthropic_auth_token": "t"})
+    assert llm.is_configured({"llm_provider": "claude", "anthropic_api_key": "sk-ant-api-1"})
+    assert not llm.is_configured({"llm_provider": "claude"})
+
+
+def test_client_options_send_bearer_token_with_the_oauth_beta_header():
+    options = llm._client_options({"llm_provider": "claude", "anthropic_auth_token": "t"})
+    assert options["auth_token"] == "t"
+    assert options["default_headers"] == {"anthropic-beta": llm.DEFAULT_OAUTH_BETA}
+
+
+def test_oauth_beta_header_is_overridable():
+    options = llm._client_options(
+        {"llm_provider": "claude", "anthropic_auth_token": "t", "anthropic_oauth_beta": "beta-9"}
+    )
+    assert options["default_headers"] == {"anthropic-beta": "beta-9"}
+
+
+def test_plain_api_key_sends_no_bearer_token():
+    options = llm._client_options({"llm_provider": "claude", "anthropic_api_key": "sk-ant-api-1"})
+    assert "auth_token" not in options
+    assert "default_headers" not in options
+
+
+def test_openai_provider_never_sends_a_bearer_token():
+    cfg = {"llm_provider": "openai", "openai_api_key": "sk-1", "anthropic_auth_token": "t"}
+    assert llm.auth_token_for(cfg) == ""
+    assert "auth_token" not in llm._client_options(cfg)
