@@ -62,14 +62,19 @@ jobs:
       # so it stays off until we actually want to block on severity. The scan that
       # matters is on the release step below, against the image that ships.
       - if: github.event_name == 'pull_request' && steps.detect.outputs.image_name != ''
-        uses: magmamoose/diatreme@487e99d90952ee46c23bc638ca4b7dc8d998132b # v2.12.1
+        uses: magmamoose/diatreme@5fdaad2a5e1efc4045376864613721001d53fa1a # v2.13.0
         with:
           mode: ci
           image_name: ${{ steps.detect.outputs.image_name }}
       # Default-branch push (or manual dispatch): version + release.
       #
-      # v2.12.1 IS THE FLOOR. Two fixes below it, each the difference between this
-      # working and looking like it works:
+      # v2.13.0 IS THE FLOOR. Three fixes below it, each the difference between
+      # this working and looking like it works:
+      #   v2.13.0 (MagmaMoose/diatreme#177) — every image upload carries a
+      #     `repo:<name>` tag. An image project is named after the IMAGE, and a
+      #     repo may build several (dunmir -> dunmir-agent, -backend, -frontend),
+      #     so nothing downstream can map a project back to its repo. Without the
+      #     tag the DefectDojo sync gives dunmir FOUR products instead of one.
       #   v2.12.0 (MagmaMoose/diatreme#174) — the image scan runs in `mode: release`
       #     at all. Before it the scan was `mode: ci` only and the sinks were wired
       #     to the pr-<N> scan, so these inputs were accepted and did NOTHING.
@@ -110,7 +115,7 @@ jobs:
       # engagement per scan type, which is DefectDojo's own data model.
       - id: release
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: magmamoose/diatreme@487e99d90952ee46c23bc638ca4b7dc8d998132b # v2.12.1
+        uses: magmamoose/diatreme@5fdaad2a5e1efc4045376864613721001d53fa1a # v2.13.0
         with:
           mode: release
           versioning-tool: gitversion

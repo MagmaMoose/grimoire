@@ -88,7 +88,12 @@ jobs:
     # self-hosted runners bomb out.
     runs-on: ubuntu-latest
     steps:
-      - uses: magmamoose/chargate@276ab445e1a41875b14829552ddfae56c0e12b67 # v2.11.52
+      # v2.11.55 IS THE FLOOR: from it, every upload carries a `repo:<name>`
+      # tag. A repo has TWO Dependency-Track projects — this source one and
+      # Diatreme's assembled-image one — and nothing downstream can tell they
+      # belong together without it. The DefectDojo sync uses that tag to put a
+      # repo in one product instead of two (MagmaMoose/chargate#87).
+      - uses: magmamoose/chargate@eebaf871da16642ce485c8acc5be1d4d66ae7329 # v2.11.55
         with:
           defectdojo_url: ${{ vars.MM_DEFECTDOJO_URL }}
           defectdojo_token: ${{ secrets.MM_DEFECTDOJO_API_KEY }}
@@ -123,7 +128,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: magmamoose/chargate@276ab445e1a41875b14829552ddfae56c0e12b67 # v2.11.52
+      - uses: magmamoose/chargate@eebaf871da16642ce485c8acc5be1d4d66ae7329 # v2.11.55
         with:
           sbom_only: 'true'
           # Shallow on purpose. fetch_depth defaults to 0 because NET-NEW gating
