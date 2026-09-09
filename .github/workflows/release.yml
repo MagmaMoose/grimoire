@@ -62,16 +62,22 @@ jobs:
       # so it stays off until we actually want to block on severity. The scan that
       # matters is on the release step below, against the image that ships.
       - if: github.event_name == 'pull_request' && steps.detect.outputs.image_name != ''
-        uses: magmamoose/diatreme@b2e2cc1d56dee953207d5abc703b30d571c9d922 # v2.12.0
+        uses: magmamoose/diatreme@487e99d90952ee46c23bc638ca4b7dc8d998132b # v2.12.1
         with:
           mode: ci
           image_name: ${{ steps.detect.outputs.image_name }}
       # Default-branch push (or manual dispatch): version + release.
       #
-      # v2.12.0 IS THE FLOOR (MagmaMoose/diatreme#174): before it, the image scan
-      # ran in `mode: ci` only and the sinks were wired to the pr-<N> scan. On
-      # v2.8.0 the inputs below are accepted and do NOTHING — there is no
-      # release-mode scan to fire them — so #97's wiring was inert until this bump.
+      # v2.12.1 IS THE FLOOR. Two fixes below it, each the difference between this
+      # working and looking like it works:
+      #   v2.12.0 (MagmaMoose/diatreme#174) — the image scan runs in `mode: release`
+      #     at all. Before it the scan was `mode: ci` only and the sinks were wired
+      #     to the pr-<N> scan, so these inputs were accepted and did NOTHING.
+      #   v2.12.1 (MagmaMoose/diatreme#176) — the BOM actually lands. Trivy emits
+      #     CycloneDX 1.7, Dependency-Track 4.14.2 accepts up to 1.6 and rejects the
+      #     rest with `HTTP 400 Unrecognized specVersion`. Every released image
+      #     failed this way while the DefectDojo half of the same scan imported
+      #     fine, leaving projects that exist and have never had a BOM.
       #
       # `image-scan` here scans the PROMOTED release tag and ships it: the
       # assembled image's CycloneDX SBOM to Dependency-Track and its Trivy
@@ -104,7 +110,7 @@ jobs:
       # engagement per scan type, which is DefectDojo's own data model.
       - id: release
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: magmamoose/diatreme@b2e2cc1d56dee953207d5abc703b30d571c9d922 # v2.12.0
+        uses: magmamoose/diatreme@487e99d90952ee46c23bc638ca4b7dc8d998132b # v2.12.1
         with:
           mode: release
           versioning-tool: gitversion
