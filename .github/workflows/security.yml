@@ -1,16 +1,31 @@
 # Org Chargate security gate (MegaLinter-backed, net-new PR-diff gating), consumed
-# as the Chargate MARKETPLACE ACTION. It gates on net-new findings on pull requests.
+# as the Chargate MARKETPLACE ACTION. It gates on net-new findings on pull requests,
+# and ships the repo's source SBOM on merge.
 #
-# pull_request only: the push-to-default baseline scan was dropped. Every merge to
-# the default branch (including the Caldrith-managed and Diatreme version-bump/tag
-# commits) otherwise kicks off a full ~15-min MegaLinter run — the single biggest
-# source of wasted CI. PR-time net-new gating is retained; the default-branch
-# baseline SARIF on the Security tab is simply no longer refreshed (it needs GHAS on
-# private repos anyway, and the code_scanning ruleset gate is CodeQL, not chargate).
+# THE GATE IS pull_request ONLY. The push-to-default baseline scan was dropped:
+# every merge to the default branch (including the Caldrith-managed and Diatreme
+# version-bump/tag commits) otherwise kicks off a full ~15-min MegaLinter run — the
+# single biggest source of wasted CI. PR-time net-new gating is retained; the
+# default-branch baseline SARIF on the Security tab is simply no longer refreshed
+# (it needs GHAS on private repos anyway, and the code_scanning ruleset gate is
+# CodeQL, not chargate).
+#
+# The `sbom` job below is why `push` is back. Chargate uploads a CycloneDX BOM to
+# Dependency-Track on NON-PR events only — a BOM per pull request would litter the
+# server with throwaway `N/merge` versions — so a workflow that only ever ran on
+# pull_request never reached that path, and the repo never appeared in
+# Dependency-Track at all. DefectDojo imports on every event and filled up normally,
+# which is exactly what made the gap read as a Dependency-Track fault for three
+# months rather than a missing trigger. `sbom_only` ships the BOM with no MegaLinter
+# attached, so the trigger comes back for seconds per merge instead of ~15 minutes.
 name: Security
 
 on:
   pull_request:
+  push:
+    # Every repo in the org defaults to `main` (checked). A repo that renames its
+    # default branch must add it here, or its BOM silently stops being shipped.
+    branches: [main]
 
 # A superseded run MUST die. Chargate takes ~15 minutes, and its findings are a
 # statement about the ONE commit it scanned: without this, a push mid-run leaves the
@@ -58,6 +73,10 @@ permissions:
 
 jobs:
   chargate:
+    # `push` now triggers this file for the sbom job below, so the expensive gate
+    # has to say out loud that it is still pull-request-only. Without this guard
+    # every merge silently gets the ~15-minute scan back.
+    if: github.event_name == 'pull_request'
     # Runner routing, rendered by visibility — see `template_vars` at the top of
     # settings.yml. `runs_on_amd64`, NOT `runs_on`: Chargate is amd64-only in
     # practice (arm64 runs MegaLinter's per-linter images sequentially and the job
@@ -69,7 +88,7 @@ jobs:
     # self-hosted runners bomb out.
     runs-on: ubuntu-latest
     steps:
-      - uses: magmamoose/chargate@13239654c6395322b0698720f0f7cfc4c2f7e40e # v2.11.10
+      - uses: magmamoose/chargate@276ab445e1a41875b14829552ddfae56c0e12b67 # v2.11.52
         with:
           defectdojo_url: ${{ vars.MM_DEFECTDOJO_URL }}
           defectdojo_token: ${{ secrets.MM_DEFECTDOJO_API_KEY }}
@@ -81,5 +100,37 @@ jobs:
           # normally and the symptom looked like a Dependency-Track fault instead of
           # a typo. Check these against `gh variable list --org MagmaMoose` before
           # editing — nothing fails when they are wrong.
+          dependency_track_url: ${{ vars.MM_DEPENDENCYTRACK_URL }}
+          dependency_track_api_key: ${{ secrets.MM_DEPENDENCYTRACK_API_KEY }}
+
+  # Ship the source-dependency SBOM on merge. Seconds, not the ~15 minutes the gate
+  # costs: `sbom_only` runs Syft and the upload and skips MegaLinter entirely.
+  #
+  # This is the ONLY thing that puts a repo into Dependency-Track. The gate above
+  # cannot: it runs on pull_request, and Chargate deliberately refuses to upload a
+  # BOM on a pull request.
+  #
+  # It fails LOUDLY on a misconfigured sink, unlike the gate, where an unset URL
+  # legitimately means "this sink is off". A job whose only purpose is the upload
+  # has nothing left to do, and reporting success there is what hid the org-wide
+  # breakage for three months. A Dependency-Track OUTAGE still only warns.
+  sbom:
+    if: github.event_name == 'push'
+    # `runs_on`, not `runs_on_amd64`: no MegaLinter here, so no arch constraint.
+    runs-on: ubuntu-latest
+    # Narrower than the workflow default on purpose: this job posts no comment,
+    # uploads no SARIF and mints no OIDC token. It reads the repo and calls out.
+    permissions:
+      contents: read
+    steps:
+      - uses: magmamoose/chargate@276ab445e1a41875b14829552ddfae56c0e12b67 # v2.11.52
+        with:
+          sbom_only: 'true'
+          # Shallow on purpose. fetch_depth defaults to 0 because NET-NEW gating
+          # needs the merge-base; `chargate sbom` does no git work at all, so a
+          # full clone here is pure cost on a large repo.
+          fetch_depth: '1'
+          # Same names as the gate above, and the same warning applies: check them
+          # against `gh variable list --org MagmaMoose` before editing.
           dependency_track_url: ${{ vars.MM_DEPENDENCYTRACK_URL }}
           dependency_track_api_key: ${{ secrets.MM_DEPENDENCYTRACK_API_KEY }}
