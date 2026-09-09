@@ -42,11 +42,24 @@ jobs:
     # Brimyr runs the repo's own test suite and has no architecture constraint.
     runs-on: ubuntu-latest
     steps:
-      # v1.9.5 IS THE FLOOR, not just the current release: it is the first
-      # version in which a repo with no detectable test suite passes instead of
-      # exiting 2 (MagmaMoose/brimyr#54). Anything older turns this workflow into
-      # a permanently red check on every repo that has nothing to test.
-      - uses: magmamoose/brimyr@2bb66c503fe7cda6a0cf9f29f5edc0082824a8af # v1.9.5
+      # v1.9.7 IS THE FLOOR, not just the current release. Three fixes below it are
+      # each the difference between a working gate and a permanently red check:
+      #   v1.9.5 (MagmaMoose/brimyr#54) — a repo with no detectable test suite
+      #     passes instead of exiting 2, so the ~12 repos here with nothing to test
+      #     are not red for ever.
+      #   v1.9.6 (MagmaMoose/brimyr#56) — Brimyr installs the repo's OWN test
+      #     dependencies before running its tests. Nothing in this workflow does
+      #     that ("install your test deps first" is a contract no fleet-wide
+      #     template can honour), so on v1.9.5 every Python repo got
+      #     `/bin/sh: 1: pytest: not found`, reported as a tool error.
+      #   v1.9.7 (MagmaMoose/brimyr#59) — a NESTED project's tests are no longer
+      #     read as this repo's. Without it diatreme (bash + TypeScript, all its
+      #     Python under broker/ with its own pyproject) is detected as Python at
+      #     the root, where pytest collects broker's files and dies importing them.
+      # Verified per version against chargate and diatreme, not from release notes:
+      # v1.9.5 red on both; v1.9.7 gives chargate 99.3% patch coverage and diatreme
+      # a clean skip.
+      - uses: magmamoose/brimyr@061ae3582fc151ac4f65ecd8090282dc6fa6dc3a # v1.9.7
         with:
           # `threshold` is deliberately absent: 80 is the action's own default, and
           # naming it here would be a second place to keep in sync with the tool.

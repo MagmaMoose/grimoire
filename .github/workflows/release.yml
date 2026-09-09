@@ -54,39 +54,58 @@ jobs:
           else
             echo "image_name=" >> "$GITHUB_OUTPUT"
           fi
-      # PR: verify the image builds, then scan it (image repos only).
+      # PR: verify the image builds (image repos only). No `image-scan` here.
       #
-      # The scan is what puts the ASSEMBLED image into Dependency-Track and
-      # DefectDojo: base-image packages plus whatever the Dockerfile added.
-      # Chargate covers only declared source dependencies, so without this a repo
-      # can sit in Dependency-Track looking covered while nothing has ever
-      # inventoried the thing it actually ships.
-      #
-      # `image-scan` is REQUIRED here — it defaults to false, so setting the sink
-      # URLs alone does nothing. That is a second silent off-switch on top of the
-      # "active iff the URL is set" one that kept Dependency-Track empty org-wide
-      # for three months (fixed in #95); both have to be right or this reports
-      # success while shipping nothing.
-      #
-      # NOT set, deliberately: `dependency-track-project-name` and
-      # `-project-version`. Diatreme defaults the project to
-      # `<image path> (image)` — distinct from Chargate's bare repo path, which is
-      # what keeps the two SBOMs as two projects on one server. Pinning a name
-      # here would collapse them and each tool would overwrite the other's
-      # inventory. The version defaults to the image tag (`pr-<N>`).
-      #
-      # DefectDojo gets the SAME product as Chargate with a different engagement
-      # (Diatreme's default, "Diatreme image scan"): one product per repo, one
-      # engagement per scan type, which is DefectDojo's own data model. Product
-      # name and type mirror Chargate's defaults so both tools resolve the same
-      # product rather than racing to auto-create two.
-      #
-      # `image-scan-gate` / `image-scan-strict` stay at their non-blocking
-      # defaults: visibility first, and a sink outage must never fail a PR.
+      # Diatreme can scan the pr-<N> candidate, but that scan only feeds
+      # `image-scan-gate` and reports to no sink by design. With the gate off
+      # across the org it would be a Trivy run per pull request with no consumer,
+      # so it stays off until we actually want to block on severity. The scan that
+      # matters is on the release step below, against the image that ships.
       - if: github.event_name == 'pull_request' && steps.detect.outputs.image_name != ''
         uses: magmamoose/diatreme@79056f54fdfba54c0b260ffa371df14b94f1a8e6 # v2.8.0
         with:
           mode: ci
+          image_name: ${{ steps.detect.outputs.image_name }}
+      # Default-branch push (or manual dispatch): version + release.
+      #
+      # `image-scan` here scans the PROMOTED release tag and ships it: the
+      # assembled image's CycloneDX SBOM to Dependency-Track and its Trivy
+      # findings to DefectDojo. That is base-image packages plus whatever the
+      # Dockerfile added — Chargate covers declared source dependencies only, so
+      # without this a repo can sit in Dependency-Track looking covered while
+      # nothing has ever inventoried the thing it actually ships.
+      #
+      # ON THE RELEASE STEP, not the PR step. The sinks describe what is DEPLOYED.
+      # Reporting pr-<N> instead succeeds and looks correct, which is what makes it
+      # the wrong default: Dependency-Track accumulates one project version per
+      # pull request for ever, and the inventory ends up describing whichever PR
+      # ran last rather than what is actually running.
+      #
+      # `image-scan` is REQUIRED — it defaults to false, so setting the sink URLs
+      # alone does nothing. That is a second silent off-switch on top of the
+      # "active iff the URL is set" one that kept Dependency-Track empty org-wide
+      # for three months (#95); both have to be right or the job reports success
+      # and ships nothing.
+      #
+      # NOT set, deliberately: `dependency-track-project-name` and
+      # `-project-version`. Diatreme defaults the project to
+      # `<image path> (image)` — distinct from Chargate's bare repo path, which is
+      # what keeps the two SBOMs as two projects on one server — and the version to
+      # the release tag. Pinning a name here would collapse them and each tool
+      # would overwrite the other's inventory.
+      #
+      # DefectDojo gets the SAME product as Chargate with a different engagement
+      # (Diatreme's default, "Diatreme image scan"): one product per repo, one
+      # engagement per scan type, which is DefectDojo's own data model.
+      - id: release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: magmamoose/diatreme@79056f54fdfba54c0b260ffa371df14b94f1a8e6 # v2.8.0
+        with:
+          mode: release
+          versioning-tool: gitversion
+          environment: prod
+          environments: '["prod"]'
+          prerelease-identifiers: '{}'
           image_name: ${{ steps.detect.outputs.image_name }}
           image-scan: 'true'
           # DEPENDENCYTRACK / DEFECTDOJO, one word — check any edit against
@@ -98,17 +117,6 @@ jobs:
           defectdojo-api-key: ${{ secrets.MM_DEFECTDOJO_API_KEY }}
           defectdojo-product-name: ${{ github.event.repository.name }}
           defectdojo-product-type: 'Research and Development'
-      # Default-branch push (or manual dispatch): version + release.
-      - id: release
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: magmamoose/diatreme@79056f54fdfba54c0b260ffa371df14b94f1a8e6 # v2.8.0
-        with:
-          mode: release
-          versioning-tool: gitversion
-          environment: prod
-          environments: '["prod"]'
-          prerelease-identifiers: '{}'
-          image_name: ${{ steps.detect.outputs.image_name }}
       # Keep the floating major tag (v1, v2, ...) on the newest stable release, so
       # `uses: owner/repo@v2` means something. Nothing moved it before: chargate's
       # `v2` was set once and sat on v2.11.1 while the repo shipped v2.11.28, and

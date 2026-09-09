@@ -73,5 +73,13 @@ jobs:
         with:
           defectdojo_url: ${{ vars.MM_DEFECTDOJO_URL }}
           defectdojo_token: ${{ secrets.MM_DEFECTDOJO_API_KEY }}
-          dependency_track_url: ${{ vars.MM_DEPENDENCY_TRACK_URL }}
-          dependency_track_api_key: ${{ secrets.MM_DEPENDENCY_TRACK_API_KEY }}
+          # DEPENDENCYTRACK, one word — matching the org variable/secret that
+          # actually exist. This read MM_DEPENDENCY_TRACK_* for three months; an
+          # undefined `vars.X` expands to the empty string, chargate treats an empty
+          # sink URL as "this sink is off", and so every repo here silently stopped
+          # shipping its BOM. DefectDojo's names happened to match, so it filled up
+          # normally and the symptom looked like a Dependency-Track fault instead of
+          # a typo. Check these against `gh variable list --org MagmaMoose` before
+          # editing — nothing fails when they are wrong.
+          dependency_track_url: ${{ vars.MM_DEPENDENCYTRACK_URL }}
+          dependency_track_api_key: ${{ secrets.MM_DEPENDENCYTRACK_API_KEY }}
