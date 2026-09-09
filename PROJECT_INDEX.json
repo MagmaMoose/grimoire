@@ -1,0 +1,165 @@
+{
+  "name": "transcribe",
+  "version": "1.1.0",
+  "description": "Local, open-source meeting notes for macOS. Drop a recording in a folder and get back the transcript, a structured set of notes, and per-meeting folders — without the recording ever leaving your machine.",
+  "language": "Python",
+  "python_requires": ">=3.11",
+  "platform": "macOS only",
+  "license": "MIT",
+  "entry_point": "transcribe.cli:main",
+  "build_backend": "hatchling",
+
+  "pipeline": [
+    "Local transcription (ffmpeg + whisper-cpp + Silero VAD)",
+    "Meeting detection (calendar events + silence gaps + LLM)",
+    "Speaker attribution (sherpa-onnx clustering + LLM naming)",
+    "Notes generation (LLM schema-constrained call)",
+    "Filing (one folder per meeting in destination directory)",
+    "Slack notification (optional)"
+  ],
+
+  "source_layout": {
+    "root": "src/transcribe/",
+    "modules": {
+      "__init__.py": "package metadata / __version__",
+      "__main__.py": "python -m transcribe entry point",
+      "cli.py": "argument parsing, dispatch, doctor, calendar-check, mic subcommands",
+      "config.py": "load/save ~/.transcribe/config.yaml + DEFAULT_CONFIG",
+      "audio.py": "CoreAudio: which inputs are in use (meeting detection)",
+      "autorecord.py": "meeting detection state machine, drives OBS via WebSocket",
+      "camera.py": "CoreMediaIO: which cameras are in use",
+      "menubar.py": "menu bar app: manual override and signal visibility (rumps)",
+      "media.py": "ffmpeg/ffprobe: probe, extract audio, lossless video cut",
+      "vocabulary.py": "assembles the whisper prompt from calendar + mined glossary (224-token budget)",
+      "segments.py": "Segment and Meeting data model",
+      "whisper.py": "transcription with VAD, timestamped segments, model download",
+      "diarize.py": "sherpa-onnx speaker clustering and attribution",
+      "calendars.py": "EventKit lookup; registry for future calendar sources",
+      "segmentation.py": "meeting boundary detection (split_into_meetings)",
+      "notes.py": "notes generation and speaker naming (LLM), apply_corrections feedback loop",
+      "llm.py": "provider dispatch (Anthropic / OpenAI-compatible), text and schema-constrained calls",
+      "render.py": "Markdown / HTML / transcript / JSON renderers",
+      "processing.py": "pipeline orchestration and filing",
+      "watch.py": "watchdog directory watcher, file-stability wait",
+      "daemon.py": "launchd plist generation",
+      "links.py": "resolves a linkable URL for a destination folder (Drive / iCloud)",
+      "slack.py": "Slack webhook / bot-token notifications",
+      "gdrive.py": "optional Google Drive folder URL resolution",
+      "tls.py": "TLS CA bundle fixup for frozen binaries",
+      "voicememos.py": "Voice Memos integration",
+      "permissions.py": "macOS permission helpers"
+    }
+  },
+
+  "tests": {
+    "root": "tests/",
+    "framework": "pytest",
+    "files": [
+      "test_autorecord.py",
+      "test_calendars.py",
+      "test_cli.py",
+      "test_config.py",
+      "test_daemon.py",
+      "test_diarize.py",
+      "test_gdrive.py",
+      "test_links.py",
+      "test_llm.py",
+      "test_media.py",
+      "test_notes.py",
+      "test_package.py",
+      "test_processing.py",
+      "test_render.py",
+      "test_segmentation.py",
+      "test_slack.py",
+      "test_tls.py",
+      "test_vocabulary.py",
+      "test_watch.py",
+      "test_watch_stability.py",
+      "test_whisper.py"
+    ]
+  },
+
+  "dependencies": {
+    "required": ["pyyaml", "watchdog", "anthropic", "openai", "requests"],
+    "optional": {
+      "diarize": ["sherpa-onnx", "numpy"],
+      "calendar": ["pyobjc-framework-EventKit"],
+      "gdrive": ["google-auth", "google-api-python-client"],
+      "autorecord": ["obsws-python"],
+      "menubar": ["obsws-python", "rumps"],
+      "all": "all optional extras"
+    },
+    "system": ["whisper-cpp (Homebrew)", "ffmpeg (Homebrew)"],
+    "dev": ["pytest", "ruff", "numpy"]
+  },
+
+  "configuration": {
+    "file": "~/.transcribe/config.yaml",
+    "template": "config.example.yaml",
+    "key_settings": {
+      "watch_directory": "Where new recordings appear (default ~/Movies)",
+      "destination_directory": "One folder per meeting is created here",
+      "llm_provider": "claude or openai",
+      "anthropic_api_key": "Required when provider is claude",
+      "anthropic_model": "Anthropic model id (default claude-haiku-4-5-20251001)",
+      "openai_base_url": "Point openai provider at any OpenAI-compatible endpoint",
+      "whisper_model": "Auto-downloaded ggml model (default large-v3-turbo)",
+      "whisper_vad": "Voice Activity Detection, keep true",
+      "meeting_mode": "Enable meeting splitting and structured notes",
+      "split_meetings": "Detect multiple meetings in one recording",
+      "diarization_enabled": "Speaker attribution",
+      "calendar_enabled": "EventKit calendar integration"
+    }
+  },
+
+  "cli_commands": [
+    "transcribe <file>                 # process one recording",
+    "transcribe <file> --no-split      # treat as a single meeting",
+    "transcribe <file> --flat          # legacy: one transcript, one summary",
+    "transcribe watch <dir>            # watch folder in foreground",
+    "transcribe setup-daemon           # install launchd agent",
+    "transcribe doctor                 # check tools, models, keys, permissions",
+    "transcribe calendar-check         # grant/verify macOS Calendar access",
+    "transcribe config                 # show configuration",
+    "transcribe autorecord             # record meetings automatically via OBS",
+    "transcribe setup-autorecord       # install auto-record launchd agent",
+    "transcribe menubar                # menu bar app with manual override",
+    "transcribe mic                    # show inputs, cameras, recording state"
+  ],
+
+  "output_per_meeting": [
+    "notes.md       - meeting notes in Markdown",
+    "notes.html     - standalone HTML page",
+    "notes.json     - machine-readable notes + every segment",
+    "transcript.txt - timestamped, grouped by speaker",
+    "summary.txt    - one-paragraph summary",
+    "<meeting>.mov  - lossless video clip for this meeting"
+  ],
+
+  "ci_workflows": {
+    "ci.yml": "run tests",
+    "quality.yml": "ruff lint and format check",
+    "release.yml": "publish to PyPI and update Homebrew tap",
+    "security.yml": "security scanning",
+    "semantic-versioning.yml": "semantic version enforcement",
+    "chargate.yml": "Nievah agent workflow provisioning"
+  },
+
+  "docs": {
+    "README.md": "overview, quickstart, commands, configuration",
+    "docs/install.md": "install, API keys, Slack, Google Drive, troubleshooting",
+    "docs/daemon.md": "daemon setup, logs, testing",
+    "docs/architecture.md": "pipeline, data flow, modules, security",
+    "docs/release.md": "release and Homebrew-tap process",
+    "CHANGELOG.md": "version history",
+    "config.example.yaml": "fully documented config template"
+  },
+
+  "macos_paths": {
+    "config": "~/.transcribe/config.yaml",
+    "diarization_models": "~/.transcribe/models/",
+    "whisper_models": "~/.whisper-models/ggml-<model>.bin",
+    "launchd_plist": "~/Library/LaunchAgents/com.calebsargeant.transcribe.plist",
+    "logs": "~/Library/Logs/transcribe.log, transcribe.error.log"
+  }
+}
