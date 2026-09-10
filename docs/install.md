@@ -148,7 +148,7 @@ video_extensions:
   - .m4v
 
 # Whisper model name (ggml-<name>.bin); auto-downloaded if missing
-whisper_model: base
+whisper_model: large-v3-turbo
 
 # Optional iCloud base URL for links in Slack messages
 icloud_base_url: https://www.icloud.com/iclouddrive/
@@ -427,7 +427,7 @@ this well below that; `diarization_enabled: false` turns it off entirely.
 3. The tool **moves** (not copies) files out of the watch directory — back up originals if
    needed.
 4. Watch a specific folder (e.g. `~/Movies`), not your whole home directory.
-5. Use `whisper_model: base` for most cases; only upgrade if quality is insufficient.
+5. Use `whisper_model: large-v3-turbo` for the best balance of quality and speed; use `base` if you need something faster and smaller.
 6. Transcription takes roughly 1/4 of the video length on Apple Silicon.
 
 ## Support
