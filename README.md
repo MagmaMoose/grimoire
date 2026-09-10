@@ -193,6 +193,8 @@ transcribe meeting.mov              # process one recording
 transcribe meeting.mov --no-split   # treat it as a single meeting
 transcribe meeting.mov --flat       # legacy: one transcript, one summary, no meetings
 transcribe watch ~/Movies           # watch a folder in the foreground
+transcribe voicememos               # list macOS Voice Memos
+transcribe voicememos --import      # import Voice Memos as meetings
 transcribe setup-daemon             # install the launchd agent (runs at login)
 transcribe doctor                   # check tools, models, keys, permissions
 transcribe calendar-check           # grant and verify macOS Calendar access
