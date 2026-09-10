@@ -177,6 +177,6 @@ autorecord_min_free_gb: 10
 autorecord_ignored_devices: []
 
 # OBS WebSocket Server settings
-obs_host: localhost
+obs_host: localhost  # checkov:skip=DS162092:example config — localhost is the correct default for a local OBS WebSocket connection; OBS runs on the same machine
 obs_port: 4455
 obs_password: ""
