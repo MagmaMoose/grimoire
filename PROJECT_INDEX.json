@@ -72,8 +72,8 @@
     "quality.yml: Brimyr patch-coverage gate (magmamoose/brimyr@v1.9.7)",
     "chargate.yml: MegaLinter + secret scanning (magmamoose/chargate@v2.0.2)",
     "security.yml: security scan",
-    "release.yml: release automation",
-    "semantic-versioning.yml: conventional-commit versioning"
+    "release.yml: Diatreme versioning + GitHub Release on push to main (Caldrith-managed)",
+    "publish.yml: on release published, build macOS arm64 binary, attach it, bump the Homebrew tap"
   ],
   "output_structure": {
     "per_meeting_folder": "destination/<YYYY-MM-DD> <HHMM> <title>/",

@@ -104,8 +104,8 @@ Lives in `~/.transcribe/config.yaml`. Key settings: `watch_directory`, `destinat
 - `quality.yml` — Brimyr patch-coverage gate on PRs (`magmamoose/brimyr@v1.9.7`).
 - `chargate.yml` — MegaLinter + secret scanning on PRs (`magmamoose/chargate@v2.0.2`).
 - `security.yml` — security scan.
-- `release.yml` — release automation.
-- `semantic-versioning.yml` — conventional-commit versioning.
+- `release.yml` — Diatreme versioning + GitHub Release on push to main (Caldrith-managed; do not edit).
+- `publish.yml` — on `release: published`, builds the macOS arm64 binary, attaches it, bumps the Homebrew tap.
 
 ## Security notes
 
