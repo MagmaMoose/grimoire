@@ -42,7 +42,7 @@ jobs:
     # Brimyr runs the repo's own test suite and has no architecture constraint.
     runs-on: ubuntu-latest
     steps:
-      # v1.9.7 IS THE FLOOR, not just the current release. Three fixes below it are
+      # v1.11.0 IS THE FLOOR, not just the current release. Four fixes below it are
       # each the difference between a working gate and a permanently red check:
       #   v1.9.5 (MagmaMoose/brimyr#54) — a repo with no detectable test suite
       #     passes instead of exiting 2, so the ~12 repos here with nothing to test
@@ -56,10 +56,15 @@ jobs:
       #     read as this repo's. Without it diatreme (bash + TypeScript, all its
       #     Python under broker/ with its own pyproject) is detected as Python at
       #     the root, where pytest collects broker's files and dies importing them.
+      #   v1.11.0 (MagmaMoose/brimyr#66): a `node --test` suite runs under c8 instead
+      #     of being handed to jest, and Node is installed when the runner has none.
+      #     Without it a Node repo on the self-hosted runners got `npx: not found`
+      #     and a broken run on a green suite (MagmaMoose/mcp#1, 80 passing tests).
       # Verified per version against chargate and diatreme, not from release notes:
       # v1.9.5 red on both; v1.9.7 gives chargate 99.3% patch coverage and diatreme
-      # a clean skip.
-      - uses: magmamoose/brimyr@061ae3582fc151ac4f65ecd8090282dc6fa6dc3a # v1.9.7
+      # a clean skip. v1.11.0's change gives mcp 96.6% on #1's diff, and installed
+      # Node on firefly-amd64 (MagmaMoose/mcp#3).
+      - uses: magmamoose/brimyr@93d69be544fd2e6ad54d0eefb1866ce9f175afd9 # v1.11.0
         with:
           # `threshold` is deliberately absent: 80 is the action's own default, and
           # naming it here would be a second place to keep in sync with the tool.
