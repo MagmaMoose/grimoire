@@ -1,0 +1,141 @@
+# Org Chargate security gate (MegaLinter-backed, net-new PR-diff gating), consumed
+# as the Chargate MARKETPLACE ACTION. It gates on net-new findings on pull requests,
+# and ships the repo's source SBOM on merge.
+#
+# THE GATE IS pull_request ONLY. The push-to-default baseline scan was dropped:
+# every merge to the default branch (including the Caldrith-managed and Diatreme
+# version-bump/tag commits) otherwise kicks off a full ~15-min MegaLinter run — the
+# single biggest source of wasted CI. PR-time net-new gating is retained; the
+# default-branch baseline SARIF on the Security tab is simply no longer refreshed
+# (it needs GHAS on private repos anyway, and the code_scanning ruleset gate is
+# CodeQL, not chargate).
+#
+# The `sbom` job below is why `push` is back. Chargate uploads a CycloneDX BOM to
+# Dependency-Track on NON-PR events only — a BOM per pull request would litter the
+# server with throwaway `N/merge` versions — so a workflow that only ever ran on
+# pull_request never reached that path, and the repo never appeared in
+# Dependency-Track at all. DefectDojo imports on every event and filled up normally,
+# which is exactly what made the gap read as a Dependency-Track fault for three
+# months rather than a missing trigger. `sbom_only` ships the BOM with no MegaLinter
+# attached, so the trigger comes back for seconds per merge instead of ~15 minutes.
+name: Security
+
+on:
+  pull_request:
+  push:
+    # Every repo in the org defaults to `main` (checked). A repo that renames its
+    # default branch must add it here, or its BOM silently stops being shipped.
+    branches: [main]
+
+# A superseded run MUST die. Chargate takes ~15 minutes, and its findings are a
+# statement about the ONE commit it scanned: without this, a push mid-run leaves the
+# old run alive to post inline "net-new finding" comments minutes AFTER the commit
+# that fixed them, against a SHA that is no longer the head. GitHub still renders
+# those threads on a live line, so nothing marks them outdated, and Nievah's triage
+# re-fixed the same line every round while each of its pushes superseded the next
+# scan (MagmaMoose/dunmir#157: DS440011 "fixed" twice, back both times).
+#
+# Chargate's OWN security.yml has carried this since forever; this template did not,
+# and chargate is skip_repos'd out of it — the same shape as the `id-token` gap in
+# MagmaMoose/caldrith#71, where the one repo that looked healthy was the one repo
+# this file never reached. Kept byte-identical to chargate's so they cannot drift.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+  # codeql-action/upload-sarif (and Chargate's status telemetry) read this run's
+  # metadata via GET /actions/runs/{id}; without actions:read that 403s with
+  # "Resource not accessible by integration" and the SARIF upload errors.
+  actions: read
+  # Chargate exchanges an OIDC token at its broker so PR comments are authored by
+  # Chargate[bot] rather than github-actions[bot]. WITHOUT THIS THE RUNNER CANNOT
+  # REQUEST A TOKEN AT ALL, and the only symptom is the byline on a comment that
+  # still gets posted:
+  #
+  #   Chargate[bot] token unavailable (missing 'id-token: write');
+  #   PR comments fall back to github-actions[bot].
+  #
+  # request-app-token.sh is fail-soft by design — on any error it emits an empty
+  # token and exits 0 — so there is no failed step and no red check to notice. It
+  # was missing from every consumer in the org (see MagmaMoose/caldrith#71);
+  # chargate's own repo looked healthy the whole time only because it sets this on
+  # its own security.yml, which this template is skip_repos'd out of.
+  #
+  # kics-scan ignore-line: KICS reads the literal `id-token: write` as
+  # "Passwords And Secrets - Generic Token" (baee238e-...). Chargate's own workflows
+  # carry the same suppression; without it every repo gains a new finding.
+  # kics-scan ignore-line
+  id-token: write
+
+jobs:
+  chargate:
+    # `push` now triggers this file for the sbom job below, so the expensive gate
+    # has to say out loud that it is still pull-request-only. Without this guard
+    # every merge silently gets the ~15-minute scan back.
+    if: github.event_name == 'pull_request'
+    # Runner routing, rendered by visibility — see `template_vars` at the top of
+    # settings.yml. `runs_on_amd64`, NOT `runs_on`: Chargate is amd64-only in
+    # practice (arm64 runs MegaLinter's per-linter images sequentially and the job
+    # never finishes — see the note on the var). Public repos get a literal
+    # `ubuntu-latest` (GitHub-hosted minutes are free on public repos, and this
+    # keeps them out of the self-hosted queue); private/internal repos get the
+    # amd64-pinned expression,
+    # so blanking that variable is still the instant escape hatch if the
+    # self-hosted runners bomb out.
+    runs-on: ubuntu-latest
+    steps:
+      # v2.11.55 IS THE FLOOR: from it, every upload carries a `repo:<name>`
+      # tag. A repo has TWO Dependency-Track projects — this source one and
+      # Diatreme's assembled-image one — and nothing downstream can tell they
+      # belong together without it. The DefectDojo sync uses that tag to put a
+      # repo in one product instead of two (MagmaMoose/chargate#87).
+      - uses: magmamoose/chargate@eebaf871da16642ce485c8acc5be1d4d66ae7329 # v2.11.55
+        with:
+          defectdojo_url: ${{ vars.MM_DEFECTDOJO_URL }}
+          defectdojo_token: ${{ secrets.MM_DEFECTDOJO_API_KEY }}
+          # DEPENDENCYTRACK, one word — matching the org variable/secret that
+          # actually exist. This read MM_DEPENDENCY_TRACK_* for three months; an
+          # undefined `vars.X` expands to the empty string, chargate treats an empty
+          # sink URL as "this sink is off", and so every repo here silently stopped
+          # shipping its BOM. DefectDojo's names happened to match, so it filled up
+          # normally and the symptom looked like a Dependency-Track fault instead of
+          # a typo. Check these against `gh variable list --org MagmaMoose` before
+          # editing — nothing fails when they are wrong.
+          dependency_track_url: ${{ vars.MM_DEPENDENCYTRACK_URL }}
+          dependency_track_api_key: ${{ secrets.MM_DEPENDENCYTRACK_API_KEY }}
+
+  # Ship the source-dependency SBOM on merge. Seconds, not the ~15 minutes the gate
+  # costs: `sbom_only` runs Syft and the upload and skips MegaLinter entirely.
+  #
+  # This is the ONLY thing that puts a repo into Dependency-Track. The gate above
+  # cannot: it runs on pull_request, and Chargate deliberately refuses to upload a
+  # BOM on a pull request.
+  #
+  # It fails LOUDLY on a misconfigured sink, unlike the gate, where an unset URL
+  # legitimately means "this sink is off". A job whose only purpose is the upload
+  # has nothing left to do, and reporting success there is what hid the org-wide
+  # breakage for three months. A Dependency-Track OUTAGE still only warns.
+  sbom:
+    if: github.event_name == 'push'
+    # `runs_on`, not `runs_on_amd64`: no MegaLinter here, so no arch constraint.
+    runs-on: ubuntu-latest
+    # Narrower than the workflow default on purpose: this job posts no comment,
+    # uploads no SARIF and mints no OIDC token. It reads the repo and calls out.
+    permissions:
+      contents: read
+    steps:
+      - uses: magmamoose/chargate@eebaf871da16642ce485c8acc5be1d4d66ae7329 # v2.11.55
+        with:
+          sbom_only: 'true'
+          # Shallow on purpose. fetch_depth defaults to 0 because NET-NEW gating
+          # needs the merge-base; `chargate sbom` does no git work at all, so a
+          # full clone here is pure cost on a large repo.
+          fetch_depth: '1'
+          # Same names as the gate above, and the same warning applies: check them
+          # against `gh variable list --org MagmaMoose` before editing.
+          dependency_track_url: ${{ vars.MM_DEPENDENCYTRACK_URL }}
+          dependency_track_api_key: ${{ secrets.MM_DEPENDENCYTRACK_API_KEY }}

@@ -1,0 +1,88 @@
+{
+  "name": "transcribe",
+  "version": "1.1.0",
+  "description": "Local, open-source meeting notes for macOS. Transcribes recordings locally with whisper-cpp, detects meeting boundaries, attributes speakers with sherpa-onnx, and generates structured notes via an LLM.",
+  "language": "python",
+  "python_requires": ">=3.11",
+  "platform": "macOS",
+  "build_tool": "hatchling",
+  "package_manager": "uv",
+  "entry_point": "transcribe.cli:main",
+  "source_root": "src/transcribe",
+  "test_root": "tests",
+  "test_runner": "pytest",
+  "linter": "ruff",
+  "line_length": 100,
+  "commands": {
+    "sync": "uv sync",
+    "lint": "uv run ruff check .",
+    "format_check": "uv run ruff format --check .",
+    "test": "uv run pytest -q"
+  },
+  "pipeline_stages": [
+    "whisper.py: local transcription via ffmpeg + whisper-cli + Silero VAD",
+    "calendars.py: EventKit calendar lookup (titles, attendees, boundaries)",
+    "segmentation.py: meeting boundary detection (calendar / silence gaps / LLM)",
+    "diarize.py: sherpa-onnx voice clustering and speaker attribution",
+    "notes.py: LLM speaker naming and structured notes generation",
+    "render.py: Markdown / HTML / transcript output",
+    "processing.py: pipeline orchestration and filing",
+    "slack.py: optional Slack notification"
+  ],
+  "modules": [
+    { "file": "cli.py", "role": "argument parsing, dispatch, doctor, calendar-check, mic" },
+    { "file": "config.py", "role": "~/.transcribe/config.yaml load/save + DEFAULT_CONFIG" },
+    { "file": "audio.py", "role": "CoreAudio: microphone-in-use detection" },
+    { "file": "camera.py", "role": "CoreMediaIO: camera-in-use detection" },
+    { "file": "autorecord.py", "role": "meeting-detection state machine, drives OBS via WebSocket" },
+    { "file": "menubar.py", "role": "rumps menu bar app with manual override" },
+    { "file": "media.py", "role": "ffmpeg/ffprobe: probe, extract audio, lossless video cut" },
+    { "file": "vocabulary.py", "role": "assembles Whisper prompt from calendar + mined glossary" },
+    { "file": "segments.py", "role": "Segment and Meeting dataclasses" },
+    { "file": "whisper.py", "role": "transcription with VAD, model download" },
+    { "file": "diarize.py", "role": "sherpa-onnx speaker clustering and attribution" },
+    { "file": "calendars.py", "role": "EventKit lookup; source registry for future backends" },
+    { "file": "segmentation.py", "role": "meeting boundary detection (three-signal)" },
+    { "file": "notes.py", "role": "notes generation and speaker naming via LLM" },
+    { "file": "llm.py", "role": "provider dispatch: Anthropic forced-tool-call + OpenAI JSON mode" },
+    { "file": "render.py", "role": "Markdown / HTML / transcript renderers" },
+    { "file": "processing.py", "role": "pipeline orchestration and filing" },
+    { "file": "watch.py", "role": "watchdog directory watcher and file-stability wait" },
+    { "file": "daemon.py", "role": "launchd plist generation" },
+    { "file": "links.py", "role": "resolves linkable URL for destination folder" },
+    { "file": "slack.py", "role": "Slack webhook / bot-token notifications" },
+    { "file": "gdrive.py", "role": "optional Google Drive folder URL resolution" },
+    { "file": "tls.py", "role": "TLS CA bundle fixup for frozen binaries" }
+  ],
+  "optional_extras": {
+    "diarize": ["sherpa-onnx>=1.10.0", "numpy>=1.24"],
+    "calendar": ["pyobjc-framework-EventKit>=10.0"],
+    "gdrive": ["google-auth>=2.0.0", "google-api-python-client>=2.0.0"],
+    "autorecord": ["obsws-python>=1.6"],
+    "menubar": ["obsws-python>=1.6", "rumps>=0.4"]
+  },
+  "required_dependencies": ["pyyaml>=6.0", "watchdog>=3.0.0", "anthropic>=0.40.0", "openai>=1.0.0", "requests>=2.31.0"],
+  "system_dependencies": ["whisper-cpp", "ffmpeg"],
+  "default_llm_provider": "claude",
+  "default_anthropic_model": "claude-haiku-4-5-20251001",
+  "default_whisper_model": "large-v3-turbo",
+  "config_path": "~/.transcribe/config.yaml",
+  "ci_workflows": [
+    "ci.yml: lint + format + pytest on macos-latest and ubuntu-latest",
+    "quality.yml: Brimyr patch-coverage gate (magmamoose/brimyr@v1.9.7)",
+    "chargate.yml: MegaLinter + secret scanning (magmamoose/chargate@v2.0.2)",
+    "security.yml: security scan",
+    "release.yml: Diatreme versioning + GitHub Release on push to main (Caldrith-managed)",
+    "publish.yml: on release published, build macOS arm64 binary, attach it, bump the Homebrew tap"
+  ],
+  "output_structure": {
+    "per_meeting_folder": "destination/<YYYY-MM-DD> <HHMM> <title>/",
+    "files": ["notes.md", "notes.html", "notes.json", "transcript.txt", "summary.txt", "<meeting-clip>.mov"]
+  },
+  "privacy": {
+    "transcription": "fully local (whisper-cpp)",
+    "speaker_attribution": "fully local (sherpa-onnx ONNX models)",
+    "llm_input": "text transcript only, never audio/video",
+    "offline_mode": "set llm_provider to empty or omit api key"
+  }
+}

@@ -1,41 +1,42 @@
 # Release process
 
-Releases are automated via the **Semantic Release** GitHub Actions workflow
-(`.github/workflows/semantic-versioning.yml`). You normally do not tag or build by hand.
+Releases are automated. You normally do not tag or build by hand.
 
-> macOS only at runtime; binaries are built for macOS (arm64 + x86_64) and Linux.
+> macOS only at runtime. The published binary is `transcribe-macos-arm64` (Apple Silicon).
 
 ## Automated flow
 
-On every push to `main` (or a manual `workflow_dispatch` with a `patch`/`minor`/`major`
-bump):
+On every push to `main` that changes more than docs (`**/*.md`, `docs/**`, `mkdocs.yml`,
+`LICENSE` and `.gitignore` are ignored):
 
-1. **semantic-release** computes the next version from
-   [Conventional Commit](https://www.conventionalcommits.org/) messages, creates the tag and
-   GitHub release, and reports `released` + `tag` outputs.
-2. **build** — if a release happened, PyInstaller builds binaries from `transcribe.spec` on
-   the release tag for:
-   - `transcribe-macos-arm64`
-   - `transcribe-macos-x86_64`
-   - `transcribe-linux-x86_64`
-   - `transcribe-linux-arm64`
-3. **upload** — attaches the four binaries and a `SHA256SUMS` file to the GitHub release.
-4. **update-homebrew-tap** — dispatches the `update-sha256.yml` workflow in the
-   **MagmaMoose tap** repo with the new version, so the formula's checksums refresh
-   automatically.
+1. **Diatreme** (`.github/workflows/release.yml`) computes the next version from git history,
+   tags it and publishes the GitHub release. Caldrith provisions this file from
+   `MagmaMoose/admin`, so edits made here are overwritten on the next sync.
+2. **Publish binaries** (`.github/workflows/publish.yml`) runs on `release: published`:
+   - **build**: PyInstaller builds `transcribe.spec` from the release tag on `macos-15` (the
+     published asset) and `macos-14` (a compatibility build that is not published), and runs
+     `--help` on each.
+   - **upload**: attaches `transcribe-macos-arm64` and `SHA256SUMS` to the release.
+   - **bump-homebrew**: opens `bump-transcribe-<version>` on
+     [MagmaMoose/homebrew-tap](https://github.com/MagmaMoose/homebrew-tap) with the new url and
+     sha256, closing any older open transcribe bump first. The tap auto-merges it once its CI
+     (`brew audit`, `brew style`, `brew install` + `brew test`) passes.
 
-So, to cut a release, just merge Conventional-Commit-formatted changes into `main`. Use a
-`feat:` commit for a minor bump, `fix:` for a patch, and a `!`/`BREAKING CHANGE` for a major.
+Prereleases are never built or bumped.
 
-To force a specific bump, run the workflow manually (Actions → **Semantic Release** → Run
-workflow) and pick `patch`, `minor`, or `major`.
+To rebuild and re-publish an existing release, run the workflow by hand (Actions →
+**Publish binaries** → Run workflow) with the release tag.
+
+The bump needs the `HOMEBREW_TAP_TOKEN` org secret: a fine-grained PAT on
+`MagmaMoose/homebrew-tap` with Contents and Pull requests: write. If it expires, the bump job
+fails at **Check the tap token**.
 
 ## Checklist before merging to main
 
 - [ ] Update `CHANGELOG.md` for the upcoming version.
 - [ ] Tests pass: `uv run pytest` (or `pytest`).
 - [ ] Lint clean: `uv run ruff check .` (line length 100).
-- [ ] Commit messages follow Conventional Commits so the version bumps correctly.
+- [ ] Commit messages follow Conventional Commits.
 
 ## Local development install
 
@@ -52,7 +53,7 @@ transcribe --help
 System dependencies for local runs:
 
 ```bash
-brew install whisper-cpp ffmpeg
+brew install whisper.cpp ffmpeg
 ```
 
 ## Building a binary locally
@@ -68,5 +69,6 @@ pyinstaller --clean transcribe.spec
 
 ## Repos involved
 
-- Source: <https://github.com/CalebSargeant/transcribe>
-- Homebrew tap: `MagmaMoose/tap` (consumes the released binaries and `SHA256SUMS`)
+- Source: <https://github.com/MagmaMoose/grimoire>
+- Homebrew tap: `MagmaMoose/homebrew-tap` (`brew tap magmamoose/tap`), which consumes the
+  released binary

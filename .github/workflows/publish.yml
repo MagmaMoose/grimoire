@@ -1,0 +1,203 @@
+name: Publish binaries
+
+# Builds the transcribe binary for every stable GitHub Release, attaches it to that
+# release, and opens the Homebrew tap bump.
+#
+# Diatreme's release.yml (provisioned by Caldrith, so local edits are overwritten on
+# the next sync) is the ONLY thing that decides a version: it tags and publishes a
+# release on every push to main. This used to be a second, repo-owned semantic-release
+# pipeline that raced it. Diatreme tagged first, semantic-release then logged "No
+# release will be made, 1.3.9 has already been released!", and the build, upload and
+# bump jobs were skipped, so every release from v1.3.1 (the day Caldrith provisioned
+# release.yml) shipped with no binaries. `release: published` fires after Diatreme
+# publishes, the same hook brimyr's major-tag.yml uses.
+#
+# `workflow_dispatch` rebuilds and re-publishes an existing release from its tag.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build and publish, e.g. v1.3.9'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build:
+    name: Build binary on ${{ matrix.runner }} (${{ matrix.arch }})
+    # A prerelease never reaches the tap. On workflow_dispatch there is no release
+    # payload, so this is true.
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS-only tool. macos-13 (the last Intel runner) is deprecated/removed,
+        # so we build on the two current Apple-Silicon runners. Both are arm64; the
+        # macos-15 build is the published release asset, macos-14 is kept as a
+        # backwards-compat build so we catch macOS-version regressions before users.
+        include:
+          - runner: macos-15
+            arch: arm64
+            artifact_name: transcribe-macos-arm64
+          - runner: macos-14
+            arch: arm64
+            artifact_name: transcribe-macos-arm64-macos14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          uv sync
+          uv pip install pyinstaller
+
+      - name: Build executable
+        run: |
+          uv run pyinstaller --clean transcribe.spec
+
+      - name: Rename executable
+        run: |
+          mv dist/transcribe dist/${{ matrix.artifact_name }}
+
+      - name: Make executable
+        run: |
+          chmod +x dist/${{ matrix.artifact_name }}
+
+      - name: Test executable
+        run: |
+          dist/${{ matrix.artifact_name }} --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+
+  upload:
+    name: Upload binaries to release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download published artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: transcribe-macos-arm64
+          path: dist
+
+      - name: Calculate SHA256 checksums
+        run: |
+          cd dist
+          sha256sum transcribe-* > SHA256SUMS
+          cat SHA256SUMS
+
+      # `gh release upload` only adds assets. action-gh-release also PATCHes the
+      # release (make_latest defaults to true), which would move "Latest" back onto
+      # an old tag whenever one is re-published by hand. --clobber makes a re-publish
+      # replace the assets instead of failing on the existing names.
+      - name: Upload binaries to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$TAG" dist/transcribe-macos-arm64 dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+  # Opens `bump-transcribe-<version>` on the tap (url + sha256 recomputed from the
+  # asset uploaded above). The tap auto-merges `bump-*` PRs once its required checks
+  # pass, with no approval, so its CI (`brew install` + `brew test` on arm64) is the
+  # only gate between this job and users. Requires HOMEBREW_TAP_TOKEN, a fine-grained
+  # PAT on MagmaMoose/homebrew-tap with Contents + Pull requests: write.
+  bump-homebrew:
+    name: Bump Homebrew tap formula
+    needs: upload
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    # One bump at a time across releases, so the supersede step and the PR it guards
+    # cannot interleave with another release's.
+    concurrency:
+      group: bump-homebrew-transcribe
+      cancel-in-progress: false
+
+    steps:
+      # The v1.3.0 bump died on the anonymous 60/hour API rate limit: this repo still
+      # lived under CalebSargeant then, where the org secret is not visible and
+      # resolves to an empty string. Fail with the actual reason instead.
+      - name: Check the tap token
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is empty: the org secret is not visible to this repository"
+            exit 1
+          fi
+          gh api repos/MagmaMoose/homebrew-tap --silent || {
+            echo "::error::HOMEBREW_TAP_TOKEN cannot read MagmaMoose/homebrew-tap (expired or revoked?)"
+            exit 1
+          }
+
+      # Diatreme releases on every push to main, often faster than the tap's CI
+      # merges a bump. On a third-party tap `brew bump-formula-pr` only warns about
+      # an open duplicate, so two bumps would edit the same lines and the later one
+      # would be left conflicting once the earlier merged. Close older bumps; if one
+      # for this version or a newer one is already open, open nothing.
+      - name: Supersede older transcribe bumps
+        id: supersede
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          new="${TAG#v}"
+          gh pr list --repo MagmaMoose/homebrew-tap --state open --limit 100 \
+            --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("bump-transcribe-")) | "\(.number) \(.headRefName | ltrimstr("bump-transcribe-"))"' |
+            while read -r number version; do
+              newest="$(printf '%s\n%s\n' "$version" "$new" | sort -V | tail -n1)"
+              if [ "$version" != "$new" ] && [ "$newest" = "$new" ]; then
+                gh pr close "$number" --repo MagmaMoose/homebrew-tap --delete-branch \
+                  --comment "Superseded by transcribe ${new}."
+              else
+                echo "::notice::#${number} already bumps transcribe to ${version}, not opening ${new}"
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+              fi
+            done
+
+      # Homebrew 6.x refuses to load formulae from untrusted third-party taps when
+      # HOMEBREW_REQUIRE_TAP_TRUST is set (it is, on the runner). dawidd6 *clones* the
+      # tap, so trust it by name before the bump or `brew bump-formula-pr` aborts with
+      # Homebrew::UntrustedTapError.
+      - name: Trust the MagmaMoose tap
+        if: steps.supersede.outputs.skip != 'true'
+        run: brew trust --tap magmamoose/tap
+
+      - name: Bump transcribe formula in the tap
+        if: steps.supersede.outputs.skip != 'true'
+        uses: dawidd6/action-homebrew-bump-formula@b12d2bc99c46444125e606142f28200ec71a1214 # v10
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          tap: MagmaMoose/homebrew-tap
+          formula: transcribe
+          tag: ${{ env.TAG }}
+          no_fork: true   # push the bump branch straight to the tap (don't fork)
