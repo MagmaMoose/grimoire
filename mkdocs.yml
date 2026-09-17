@@ -1,8 +1,8 @@
 site_name: Transcribe
 site_description: Local, open-source meeting notes for macOS
 site_author: Caleb Sargeant
-repo_url: https://github.com/CalebSargeant/transcribe
-repo_name: CalebSargeant/transcribe
+repo_url: https://github.com/MagmaMoose/grimoire
+repo_name: MagmaMoose/grimoire
 edit_uri: edit/main/docs/
 
 theme:
