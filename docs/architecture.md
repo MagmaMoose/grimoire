@@ -182,20 +182,7 @@ processing._write_meeting_outputs()  ──► destination/<date> <title>/
 slack.send_slack_notification()
 ```
 
-## Domain vocabulary
-
-Whisper's initial prompt is capped at `n_text_ctx / 2` = 224 tokens, so a domain
-vocabulary cannot accumulate globally: every term added crowds out another. `vocabulary.py`
-selects one per recording instead, from the calendar event (most specific), the configured
-seed, then a glossary ranked from terms recurring in past `notes.json` files, fitted to the
-budget so the most generic entries are dropped first.
-
-`notes.apply_corrections` closes the loop. The notes call already reads the whole transcript
-and infers that a garbled word was "Kubernetes"; reporting that explicitly lets the stored
-transcript be repaired and the term recorded in `~/.transcribe/glossary.json`, weighted
-above passively-mined terms. A word misheard once is primed correctly the next time.
-
-## Meeting detection
+## Automatic meeting detection and recording
 
 `audio.py` reads CoreAudio's `kAudioDevicePropertyDeviceIsRunningSomewhere` for every
 device with an input stream. This is the signal behind the menu-bar microphone indicator,
