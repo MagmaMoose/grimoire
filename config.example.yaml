@@ -29,6 +29,10 @@ openai_base_url: ""
 # openai_base_url: https://litellm.example.com   # LiteLLM gateway
 # openai_base_url: http://localhost:11434/v1     # Ollama
 
+# LLM call timeouts and retry strategy
+llm_timeout_seconds: 600
+llm_max_retries: 2
+
 # Reasoning models spend completion tokens on their chain of thought, so give
 # them headroom or these steps come back empty. You are only charged for what
 # is actually generated.
@@ -136,3 +140,43 @@ calendar_margin_minutes: 15
 # item, not by an API -- so this cannot deep-link to the meeting folder the way
 # a Google Drive link can. The folder path is shown alongside it.
 icloud_base_url: https://www.icloud.com/iclouddrive/
+
+# --- Auto-recording (transcribe autorecord) ----------------------------------
+
+# Start/stop an OBS recording when a meeting starts and ends.
+# Needs: pip install 'transcribe[autorecord]' and OBS > Tools > WebSocket Server Settings enabled.
+# A recording needs the microphone AND one corroborating signal.
+
+autorecord_require_camera: true
+autorecord_use_calendar: true
+
+# Opt-in, and noisy: recording on microphone activity alone is what makes
+# always-on capture feel unhinged.
+autorecord_mic_only: false
+
+# Virtual/loopback cameras that report as running whenever their host app is open
+autorecord_ignored_cameras: []
+
+# How often to check for audio/camera activity
+autorecord_poll_seconds: 5
+
+# How long the mic must be held before recording starts. Long enough that a
+# notification chime or a "can you hear me" does not produce a file.
+autorecord_start_after_seconds: 45
+
+# How long it must be released before recording stops. Long enough that
+# swapping a headset does not chop a meeting in two.
+autorecord_stop_after_seconds: 120
+
+# Refuse to start below this much free space: a truncated recording on a
+# full disk loses the meeting entirely.
+autorecord_min_free_gb: 10
+
+# Virtual/loopback inputs that report as running whenever their host app is open.
+# Empty means use the built-in list.
+autorecord_ignored_devices: []
+
+# OBS WebSocket Server settings
+obs_host: localhost  # DevSkim: ignore DS162092 - example config; localhost is the intended default for a same-machine OBS WebSocket connection
+obs_port: 4455
+obs_password: ""
