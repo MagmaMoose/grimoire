@@ -182,7 +182,7 @@ processing._write_meeting_outputs()  ──► destination/<date> <title>/
 slack.send_slack_notification()
 ```
 
-## Auto-recording
+## Automatic meeting detection and recording
 
 `audio.py` reads CoreAudio's `kAudioDevicePropertyDeviceIsRunningSomewhere` for every
 device with an input stream. This is the signal behind the menu-bar microphone indicator,
