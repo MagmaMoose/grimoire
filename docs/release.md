@@ -69,6 +69,6 @@ pyinstaller --clean transcribe.spec
 
 ## Repos involved
 
-- Source: <https://github.com/MagmaMoose/grimoire>
+- Source: <https://github.com/CalebSargeant/transcribe>
 - Homebrew tap: `MagmaMoose/homebrew-tap` (`brew tap magmamoose/tap`), which consumes the
   released binary

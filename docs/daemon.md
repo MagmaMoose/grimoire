@@ -97,9 +97,9 @@ ffmpeg -f lavfi -i testsrc=duration=5:size=320x240:rate=30 \
 
 In the destination folder you should then see:
 
-- `test.mp4` — original video
-- `test_transcript.txt` — transcription
-- `test_summary.txt` — LLM summary (if a provider key is configured)
+- `transcript.txt` — full transcription with timestamps
+- `notes.md`, `notes.html`, `notes.json` — structured meeting notes (if LLM key is configured)
+- `summary.txt` — one-paragraph summary (if LLM key is configured)
 - a Slack notification (if configured)
 
 ## Troubleshooting
