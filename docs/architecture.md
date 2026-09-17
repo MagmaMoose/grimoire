@@ -249,24 +249,24 @@ All daemon output goes to `~/Library/Logs/transcribe.log` and `transcribe.error.
 src/transcribe/
 ├── __init__.py      # package metadata / __version__
 ├── __main__.py      # `python -m transcribe`
-├── cli.py           # argument parsing, dispatch, doctor, calendar-check
+├── cli.py           # argument parsing, dispatch, doctor, calendar-check, mic
 ├── config.py        # load/save ~/.transcribe/config.yaml + DEFAULT_CONFIG
-├── audio.py         # CoreAudio: which inputs are in use (meeting detection)
-├── autorecord.py    # meeting detection state machine, drives OBS
+├── audio.py         # CoreAudio: which inputs are in use (autorecord detection)
+├── autorecord.py    # meeting-detection state machine, drives OBS via WebSocket
 ├── camera.py        # CoreMediaIO: which cameras are in use
-├── menubar.py       # menu bar app: manual override and signal visibility
-├── media.py         # ffmpeg/ffprobe: probe, extract audio, lossless cut
-├── vocabulary.py    # assembles the whisper prompt from calendar + mined glossary
-├── segments.py      # Segment and Meeting data model
-├── whisper.py       # transcription with VAD, timestamped segments, model download
+├── menubar.py       # rumps menu bar app: manual override and signal visibility
+├── media.py         # ffmpeg/ffprobe: probe, extract audio, lossless video cut
+├── vocabulary.py    # assembles the Whisper prompt from calendar + mined glossary
+├── segments.py      # Segment and Meeting dataclasses
+├── whisper.py       # transcription with VAD, model download
 ├── diarize.py       # sherpa-onnx speaker clustering and attribution
-├── calendars.py     # EventKit lookup; registry for future sources
+├── calendars.py     # EventKit lookup; source registry for future calendar backends
 ├── segmentation.py  # meeting boundary detection
 ├── notes.py         # notes generation and speaker naming (LLM)
-├── llm.py           # provider dispatch, text and schema-constrained calls
+├── llm.py           # provider dispatch: Anthropic forced-tool-call + OpenAI JSON mode
 ├── render.py        # Markdown / HTML / transcript renderers
 ├── processing.py    # pipeline orchestration and filing
-├── watch.py         # watchdog directory watcher, file-stability wait
+├── watch.py         # watchdog directory watcher and file-stability wait
 ├── daemon.py        # launchd plist generation
 ├── links.py         # resolves a linkable URL for a destination folder
 ├── slack.py         # Slack webhook / bot-token notifications
@@ -302,6 +302,8 @@ Optional extras:
 | `diarize` | `sherpa-onnx`, `numpy` | Speaker attribution |
 | `calendar` | `pyobjc-framework-EventKit` | Meeting titles and attendees |
 | `gdrive` | `google-auth`, `google-api-python-client` | Drive folder links |
+| `autorecord` | `obsws-python` | OBS-based auto-recording agent |
+| `menubar` | `obsws-python`, `rumps` | Menu bar app |
 
 System (Homebrew): `whisper-cpp`, `ffmpeg`.
 
