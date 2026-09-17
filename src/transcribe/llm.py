@@ -15,7 +15,13 @@ meeting notes: those need a fixed structure, so the schema is enforced by the
 provider (Anthropic tool use, OpenAI JSON mode) rather than parsed hopefully out
 of prose.
 
-If no API key is configured for the selected provider, every function degrades
+The ``claude`` provider accepts either credential shape. An API key
+(``anthropic_api_key``) is sent as ``x-api-key``; a bearer token
+(``anthropic_auth_token``, or an ``anthropic_api_key`` that looks like one) is
+sent as ``Authorization: Bearer`` with the OAuth beta header, which is what
+OAuth-issued tokens require. Setting the wrong one is the usual cause of a 401.
+
+If no credential is configured for the selected provider, every function degrades
 gracefully (returns ``None`` / ``[]`` / ``{}``) rather than failing the run --
 the transcript is still worth having on its own.
 """
@@ -44,16 +50,44 @@ def _provider(config):
     return (config.get("llm_provider") or "claude").strip().lower()
 
 
+# Anthropic OAuth tokens carry this prefix. They authenticate as bearer tokens,
+# not as x-api-key, so they have to be told apart from a normal API key.
+OAUTH_TOKEN_PREFIX = "sk-ant-oat"
+DEFAULT_OAUTH_BETA = "oauth-2025-04-20"
+
+
 def api_key_for(config):
-    """Return the API key for the selected provider, or '' when unset."""
+    """Return the API key for the selected provider, or '' when unset.
+
+    Empty for ``claude`` when the configured credential is a bearer token --
+    that one travels via ``auth_token_for`` instead.
+    """
     if _provider(config) == "openai":
         return (config or {}).get("openai_api_key") or ""
-    return (config or {}).get("anthropic_api_key") or ""
+    key = (config or {}).get("anthropic_api_key") or ""
+    if key.startswith(OAUTH_TOKEN_PREFIX):
+        return ""
+    return key
+
+
+def auth_token_for(config):
+    """Return the bearer token for ``claude``, or '' when there isn't one.
+
+    Either set ``anthropic_auth_token`` explicitly, or drop an OAuth token into
+    ``anthropic_api_key`` and it is recognised by its prefix.
+    """
+    if _provider(config) == "openai":
+        return ""
+    explicit = (config or {}).get("anthropic_auth_token") or ""
+    if explicit:
+        return explicit
+    key = (config or {}).get("anthropic_api_key") or ""
+    return key if key.startswith(OAUTH_TOKEN_PREFIX) else ""
 
 
 def is_configured(config):
-    """True when a key is set for the selected LLM provider."""
-    return bool(api_key_for(config))
+    """True when either credential shape is set for the selected provider."""
+    return bool(api_key_for(config) or auth_token_for(config))
 
 
 def _model_for(config):
@@ -76,6 +110,13 @@ def _client_options(config):
         options["base_url"] = base_url
     options["timeout"] = float((config or {}).get("llm_timeout_seconds", 600))
     options["max_retries"] = int((config or {}).get("llm_max_retries", 2))
+    token = auth_token_for(config)
+    if token:
+        # The SDK sends auth_token as `Authorization: Bearer`; the beta header
+        # is what makes an OAuth-issued token acceptable to the Messages API.
+        options["auth_token"] = token
+        beta = (config or {}).get("anthropic_oauth_beta") or DEFAULT_OAUTH_BETA
+        options["default_headers"] = {"anthropic-beta": beta}
     return options
 
 
@@ -97,7 +138,7 @@ def _anthropic_complete(system, user, api_key, model, max_tokens, temperature, o
     """Run a single-turn Anthropic completion and return the text, or None."""
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key, **(options or {}))
+    client = anthropic.Anthropic(api_key=api_key or None, **(options or {}))
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -119,7 +160,7 @@ def _anthropic_complete_json(
     """
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key, **(options or {}))
+    client = anthropic.Anthropic(api_key=api_key or None, **(options or {}))
     tool = {
         "name": "record_result",
         "description": "Record the structured result.",
