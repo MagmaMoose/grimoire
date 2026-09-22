@@ -56,8 +56,8 @@ transcribe = "transcribe.cli:main"
 [dependency-groups]
 docs = [
     "mkdocs==1.6.1",
-    "mkdocs-material==9.5.34",
-    "pymdown-extensions==10.9",
+    "mkdocs-material==9.7.7",
+    "pymdown-extensions==11.0.1",
 ]
 dev = [
     "pytest>=8.0.0",
