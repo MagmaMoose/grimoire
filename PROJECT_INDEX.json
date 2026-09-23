@@ -30,7 +30,7 @@
     "slack.py: optional Slack notification"
   ],
   "modules": [
-    { "file": "cli.py", "role": "argument parsing, dispatch, doctor, calendar-check, mic" },
+    { "file": "cli.py", "role": "argument parsing, dispatch, doctor, calendar-check, mic, voicememos" },
     { "file": "config.py", "role": "~/.transcribe/config.yaml load/save + DEFAULT_CONFIG" },
     { "file": "audio.py", "role": "CoreAudio: microphone-in-use detection" },
     { "file": "camera.py", "role": "CoreMediaIO: camera-in-use detection" },
@@ -52,7 +52,9 @@
     { "file": "links.py", "role": "resolves linkable URL for destination folder" },
     { "file": "slack.py", "role": "Slack webhook / bot-token notifications" },
     { "file": "gdrive.py", "role": "optional Google Drive folder URL resolution" },
-    { "file": "tls.py", "role": "TLS CA bundle fixup for frozen binaries" }
+    { "file": "tls.py", "role": "TLS CA bundle fixup for frozen binaries" },
+    { "file": "permissions.py", "role": "macOS responsible-process lookup for permission grant hints" },
+    { "file": "voicememos.py", "role": "import recordings and transcripts from the macOS Voice Memos app" }
   ],
   "optional_extras": {
     "diarize": ["sherpa-onnx>=1.10.0", "numpy>=1.24"],
