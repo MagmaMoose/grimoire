@@ -57,7 +57,7 @@ platform guards so the suite is cross-platform).
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | Argument parsing, dispatch, `doctor`, `calendar-check`, `mic` |
+| `cli.py` | Argument parsing, dispatch, `doctor`, `calendar-check`, `mic`, `voicememos` |
 | `config.py` | `~/.transcribe/config.yaml` load/save + `DEFAULT_CONFIG` |
 | `audio.py` | CoreAudio: which inputs are in use (autorecord detection) |
 | `camera.py` | CoreMediaIO: which cameras are in use |
@@ -80,6 +80,8 @@ platform guards so the suite is cross-platform).
 | `slack.py` | Slack webhook / bot-token notifications |
 | `gdrive.py` | Optional Google Drive folder URL resolution |
 | `tls.py` | TLS CA bundle fixup for frozen binaries |
+| `permissions.py` | macOS responsible-process lookup for permission grant hints |
+| `voicememos.py` | Import recordings and transcripts from the macOS Voice Memos app |
 
 ## Optional extras
 
