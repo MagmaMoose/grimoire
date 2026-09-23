@@ -62,14 +62,19 @@ jobs:
       # so it stays off until we actually want to block on severity. The scan that
       # matters is on the release step below, against the image that ships.
       - if: github.event_name == 'pull_request' && steps.detect.outputs.image_name != ''
-        uses: magmamoose/diatreme@5fdaad2a5e1efc4045376864613721001d53fa1a # v2.13.0
+        uses: magmamoose/diatreme@415b19df7d00e776bf2b08bfe72823df8a1c6f23 # v2.16.0
         with:
           mode: ci
           image_name: ${{ steps.detect.outputs.image_name }}
       # Default-branch push (or manual dispatch): version + release.
       #
-      # v2.13.0 IS THE FLOOR. Three fixes below it, each the difference between
-      # this working and looking like it works:
+      # v2.16.0 IS THE FLOOR. It is the first release with the helm extras that
+      # admin's `helm_chart_path` renders into this step (MagmaMoose/diatreme#194);
+      # an older Diatreme warns "Unexpected input" for each of them and publishes
+      # an unsigned, unlinted chart whose appVersion names an image tag nobody
+      # pushed.
+      # Three older fixes, each the difference between this working and looking
+      # like it works:
       #   v2.13.0 (MagmaMoose/diatreme#177) — every image upload carries a
       #     `repo:<name>` tag. An image project is named after the IMAGE, and a
       #     repo may build several (dunmir -> dunmir-agent, -backend, -frontend),
@@ -115,7 +120,7 @@ jobs:
       # engagement per scan type, which is DefectDojo's own data model.
       - id: release
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: magmamoose/diatreme@5fdaad2a5e1efc4045376864613721001d53fa1a # v2.13.0
+        uses: magmamoose/diatreme@415b19df7d00e776bf2b08bfe72823df8a1c6f23 # v2.16.0
         with:
           mode: release
           versioning-tool: gitversion
