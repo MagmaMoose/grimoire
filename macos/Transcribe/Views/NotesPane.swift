@@ -10,38 +10,96 @@ struct NotesPane: View {
     let record: MeetingRecord?
     let legacySummary: String?
     let loadError: String?
+    var missing: Missing = .canWrite
+    var onWrite: () -> Void = {}
     let onSeek: (Double) -> Void
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                if let loadError {
-                    Label(loadError, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                }
+    /// What stands between this meeting and its notes, so the empty state can
+    /// offer the one thing that fixes it rather than just reporting the gap.
+    enum Missing: Equatable {
+        /// A transcript and a provider: one click away.
+        case canWrite
+        /// A run for this meeting is going, or waiting its turn.
+        case writing
+        /// Nothing to write them with.
+        case noProvider
+        /// Nothing to write them from.
+        case noTranscript
+    }
 
-                if let notes = record?.notes {
-                    notesBody(notes)
-                } else if let legacySummary, !legacySummary.isEmpty {
-                    Section8("Summary") {
-                        Text(legacySummary)
-                            .textSelection(.enabled)
+    var body: some View {
+        if record?.notes == nil, legacySummary?.isEmpty ?? true, loadError == nil {
+            // Outside the scroll view and filling the pane, so it sits in the
+            // middle. Inside, it hugged the top left corner, which on a large
+            // display put it a long way from anywhere the eye goes.
+            emptyState
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if let loadError {
+                        Label(loadError, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
                     }
-                    Text("This meeting predates structured notes. Only the summary and transcript were saved.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else if loadError == nil {
-                    ContentUnavailableView(
-                        "No notes",
-                        systemImage: "doc.text",
-                        description: Text("This meeting has a transcript but no generated notes.")
-                    )
-                    .frame(maxWidth: .infinity)
+
+                    if let notes = record?.notes {
+                        notesBody(notes)
+                    } else if let legacySummary, !legacySummary.isEmpty {
+                        Section8("Summary") {
+                            Text(legacySummary)
+                                .textSelection(.enabled)
+                        }
+                        Text("This meeting predates structured notes. Only the summary and transcript were saved.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        if missing == .canWrite {
+                            Button("Write Full Notes", action: onWrite)
+                                .help("Write decisions, action items and a walkthrough from the transcript")
+                        }
+                    }
                 }
+                .padding(24)
+                // A reading column, centred, so a wide window does not leave it
+                // stranded against the left edge.
+                .frame(maxWidth: 780, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
-            .padding(24)
-            .frame(maxWidth: 780, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label(missing == .writing ? "Writing notes" : "No notes yet", systemImage: "doc.text")
+        } description: {
+            Text(emptyDescription)
+        } actions: {
+            switch missing {
+            case .canWrite:
+                Button("Write Notes", action: onWrite)
+                    .buttonStyle(.borderedProminent)
+                    .help("Write notes from the transcript this meeting already has")
+            case .writing:
+                ProgressView().controlSize(.small)
+            case .noProvider:
+                SettingsLink {
+                    Text("Open Settings…")
+                }
+            case .noTranscript:
+                EmptyView()
+            }
+        }
+    }
+
+    private var emptyDescription: String {
+        switch missing {
+        case .canWrite:
+            "There is a transcript, but no notes have been written from it."
+        case .writing:
+            "Notes are being written from the transcript. They appear here when they are done."
+        case .noProvider:
+            "Notes need an API key for Claude, or for an OpenAI-compatible provider. Add one in Settings, under Notes."
+        case .noTranscript:
+            "There is no transcript to write notes from yet."
         }
     }
 
@@ -70,8 +128,11 @@ struct NotesPane: View {
             Section8("Next steps") {
                 ForEach(notes.nextSteps) { step in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        // Decorative: the tickable list lives in Action
+                        // items, so this must not read as a control.
                         Image(systemName: "square")
                             .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text(step.title).fontWeight(.medium)
@@ -192,8 +253,18 @@ enum Timecode {
         return parts.reduce(0) { $0 * 60 + $1 }
     }
 
+    /// `Int(Double)` traps on NaN, on infinity, and on anything outside Int's
+    /// range. A hand-edited or truncated notes.json reaches this, and a trap
+    /// takes the whole app down rather than showing one wrong duration.
     static func text(from seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0, seconds < 1e9 else { return "--:--:--" }
         let total = Int(seconds.rounded(.down))
         return String(format: "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+    }
+
+    /// Whole minutes, or nil when the value is not a usable duration.
+    static func minutes(from seconds: Double) -> Int? {
+        guard seconds.isFinite, seconds > 0, seconds < 1e9 else { return nil }
+        return Int(seconds / 60)
     }
 }

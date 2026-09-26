@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .calendars import events_for_recording
+from .categorise import categorise_quietly
 from .config import load_config
 from .diarize import diarize_meeting
 from .llm import (
@@ -15,10 +16,12 @@ from .llm import (
     is_configured,
     summarize_with_openai,
 )
+from .locks import AlreadyClaimed, claim
 from .media import cut_video, has_video_stream, probe_duration, recording_started_at
 from .notes import (
     apply_corrections,
     generate_notes,
+    naming_roster,
     notes_action_items,
     resolve_speaker_names,
 )
@@ -28,6 +31,12 @@ from .segments import Meeting, Segment, format_timestamp
 from .slack import send_slack_notification
 from .vocabulary import build_prompt
 from .whisper import transcribe_video, transcribe_video_segments
+
+# Exit statuses for a processing run, shared by the CLI and the macOS app. 75 is
+# sysexits' EX_TEMPFAIL: nothing went wrong, someone else simply has the file.
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_BUSY = 75
 
 
 def _llm_configured(config):
@@ -93,9 +102,23 @@ def _folder_name_for(meeting, recording_start, notes):
 
 
 def _write_meeting_outputs(
-    meeting, notes, dest_dir, video_file, recording_start, config, split_video
+    meeting,
+    notes,
+    dest_dir,
+    video_file,
+    recording_start,
+    config,
+    split_video,
+    write_transcript=True,
 ):
-    """Write every artifact for one meeting into its own folder."""
+    """Write every artifact for one meeting into its own folder.
+
+    ``write_transcript`` exists for the one caller that built the meeting *from*
+    the transcript in this folder. Re-rendering it there replaces the original
+    with a reconstruction: prose gains a fabricated speaker header and
+    interpolated timestamps that read as measured, and raw whisper output loses
+    its end times. The source is then gone.
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
     written = {"folder": str(dest_dir)}
     source_name = Path(video_file).name
@@ -109,8 +132,9 @@ def _write_meeting_outputs(
     )
     written["notes_html"] = str(dest_dir / "notes.html")
 
-    (dest_dir / "transcript.txt").write_text(render_transcript(meeting), encoding="utf-8")
-    written["transcript"] = str(dest_dir / "transcript.txt")
+    if write_transcript:
+        (dest_dir / "transcript.txt").write_text(render_transcript(meeting), encoding="utf-8")
+        written["transcript"] = str(dest_dir / "transcript.txt")
 
     if notes and notes.get("summary"):
         (dest_dir / "summary.txt").write_text(notes["summary"] + "\n", encoding="utf-8")
@@ -224,6 +248,8 @@ def process_transcript(
     written = _write_meeting_outputs(
         meeting, notes, folder, audio_file or name, recorded_at, config, split_video=False
     )
+    if notes:
+        categorise_quietly(folder, config)
 
     if audio_file and config.get("move_source_video", True):
         try:
@@ -258,8 +284,11 @@ def process_transcript(
     ]
 
 
-def process_recording(video_file, config=None, write_json=False):
+def process_recording(video_file, config=None, write_json=False, title=None):
     """Process a recording into one folder of notes per meeting it contains.
+
+    ``title`` is a name the recording already carries, such as a Voice Memo the
+    user labelled. It titles a single meeting that no calendar event names.
 
     Returns the list of per-meeting result dicts.
     """
@@ -306,6 +335,8 @@ def process_recording(video_file, config=None, write_json=False):
             recording_start=recording_start,
         )
         print(f"✓ Found {len(meetings)} meeting(s) in this recording")
+        if title and len(meetings) == 1 and not meetings[0].title:
+            meetings[0].title = title
         for meeting in meetings:
             label = meeting.title or "(untitled)"
             print(f"    {format_timestamp(meeting.start)}-{format_timestamp(meeting.end)}  {label}")
@@ -331,7 +362,7 @@ def process_recording(video_file, config=None, write_json=False):
                 # invitees fall out as micro-clusters on their own.
                 if diarize_meeting(meeting, audio_path, config, num_speakers=len(known) or None):
                     print(f"  ✓ Separated {len(meeting.speakers())} voice(s)")
-                    named = resolve_speaker_names(meeting, config, known)
+                    named = resolve_speaker_names(meeting, config, naming_roster(known, config))
                     if named:
                         print(
                             "  ✓ Named: "
@@ -373,6 +404,8 @@ def process_recording(video_file, config=None, write_json=False):
                 meeting, notes, folder, video_file, recording_start, config, split_video
             )
             print(f"  ✓ Saved to {folder}")
+            if notes:
+                categorise_quietly(folder, config)
 
             action_items = notes_action_items(notes)
             if config.get("slack_webhook_url") or config.get("slack_bot_token"):
@@ -399,6 +432,10 @@ def process_recording(video_file, config=None, write_json=False):
         # so a failure part-way through never loses the original.
         if config.get("destination_directory") and config.get("move_source_video", True):
             _archive_source(video_file, base_dest, results, split_video)
+        else:
+            # Said out loud: a recording left in the watch folder otherwise looks
+            # exactly like one the pipeline forgot to file.
+            print("\n· Left the source recording where it was (move_source_video is off)")
 
         print(f"\n{'=' * 60}")
         print(f"✓ Processing complete — {len(results)} meeting(s)")
@@ -411,42 +448,77 @@ def process_recording(video_file, config=None, write_json=False):
 
 
 def _archive_source(video_file, base_dest, results, was_split):
-    """Move the source recording next to its notes, or into an archive folder."""
+    """Move the source recording next to its notes, or into an archive folder.
+
+    Returns the new path, or None when the move failed.
+    """
     try:
         if len(results) == 1 and not was_split:
             # One meeting: the recording belongs in that meeting's folder.
-            destination = Path(results[0]["folder"]) / Path(video_file).name
+            folder = Path(results[0]["folder"])
         else:
-            archive = base_dest / "Source recordings"
-            archive.mkdir(parents=True, exist_ok=True)
-            destination = archive / Path(video_file).name
+            folder = base_dest / SOURCE_ARCHIVE
+            folder.mkdir(parents=True, exist_ok=True)
+        # A rename onto an existing path replaces it without a word, and the
+        # archive folder collects every split recording, so a reused name (OBS
+        # restarts its counter) would silently destroy an earlier recording.
+        destination = _unique_file(folder, Path(video_file).name)
         shutil.move(video_file, destination)
         print(f"\n✓ Moved source recording to {destination}")
+        return destination
     except Exception as e:
         print(f"Warning: could not move source recording ({type(e).__name__}: {e})")
+        return None
 
 
-def process_video_file(video_file, config=None, write_json=False):
+# Where a recording that became several meetings is kept, since no single
+# meeting folder owns it.
+SOURCE_ARCHIVE = "Source recordings"
+
+
+def _unique_file(folder, name):
+    """A path for ``name`` in ``folder`` that does not exist yet."""
+    candidate = Path(folder) / name
+    stem, suffix = Path(name).stem, Path(name).suffix
+    counter = 2
+    while candidate.exists():
+        candidate = Path(folder) / f"{stem} ({counter}){suffix}"
+        counter += 1
+    return candidate
+
+
+def process_video_file(video_file, config=None, write_json=False, title=None):
     """Process a video file.
 
     Runs the meeting-aware pipeline by default. Setting ``meeting_mode: false``
     in config selects the original flat behaviour: one transcript, one summary,
     one folder named after the video file.
+
+    Returns ``EXIT_OK``, ``EXIT_FAILED``, or ``EXIT_BUSY`` when another process
+    already has the file.
     """
     if config is None:
         config = load_config()
 
-    if config.get("meeting_mode", True):
-        try:
-            process_recording(video_file, config, write_json=write_json)
-        except Exception as e:
-            print(f"\nError processing {video_file}: {e}")
-            import traceback
+    # Returned rather than swallowed: the app runs this as a subprocess and read
+    # a crashed run's exit status 0 as success, so a failure was reported as
+    # "finished" and the recording sat in the queue marked as done.
+    try:
+        with claim(video_file):
+            if not config.get("meeting_mode", True):
+                return _process_video_file_flat(video_file, config, write_json)
+            try:
+                process_recording(video_file, config, write_json=write_json, title=title)
+            except Exception as e:
+                print(f"\nError processing {video_file}: {e}")
+                import traceback
 
-            traceback.print_exc()
-        return
-
-    _process_video_file_flat(video_file, config, write_json)
+                traceback.print_exc()
+                return EXIT_FAILED
+            return EXIT_OK
+    except AlreadyClaimed as e:
+        print(f"Skipping: {e} by another transcribe process.")
+        return EXIT_BUSY
 
 
 def _process_video_file_flat(video_file, config, write_json=False):
@@ -550,9 +622,11 @@ def _process_video_file_flat(video_file, config, write_json=False):
         print(f"\n{'=' * 60}")
         print("✓ Processing complete!")
         print(f"{'=' * 60}\n")
+        return EXIT_OK
 
     except Exception as e:
         print(f"\nError processing {video_file}: {e}")
         import traceback
 
         traceback.print_exc()
+        return EXIT_FAILED

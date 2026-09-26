@@ -118,6 +118,24 @@ DEFAULT_CONFIG = {
     "obs_host": "localhost",
     "obs_port": 4455,
     "obs_password": "",
+    # --- You ---------------------------------------------------------------
+    # Your own name. Used to find your action items ("transcribe actions --mine",
+    # the app's Mine filter, Reminders) and offered when naming voices, since
+    # you are in every recording you make.
+    "user_name": "",
+    # --- Automation ---------------------------------------------------------
+    # Import new Voice Memos as meetings: the app and "transcribe watch" check
+    # every few minutes. Reading the Voice Memos library needs Full Disk Access.
+    "voice_memos_auto_import": True,
+    # How far back an unattended import looks, so the first run does not file
+    # years of old memos.
+    "voice_memos_lookback_days": 7,
+    # Label each meeting with categories as it is filed, so the app can group
+    # the library without a separate "categorise" pass.
+    "auto_categorise": True,
+    # Extra ways to group meetings, each with one value per meeting, filled in
+    # by the categoriser and editable in the app, e.g. [Company, Project].
+    "group_fields": [],
     # --- Calendar ----------------------------------------------------------
     # Match the recording against calendar events for real titles and attendees.
     # Needs: pip install 'transcribe[calendar]' and Calendar permission.

@@ -14,6 +14,10 @@ _CREATION_FORMATS = (
     "%Y-%m-%dT%H:%M:%SZ",
 )
 
+# Every extension the pipeline treats as a recording, audio included. One list,
+# matching the macOS app's own: two copies of it had drifted apart once already.
+MEDIA_SUFFIXES = frozenset({".mov", ".mp4", ".m4v", ".m4a", ".qta", ".wav", ".mp3", ".mkv", ".avi"})
+
 # OBS names its recordings "<YYYY-MM-DD HH-MM-SS>.<ext>". When container metadata
 # carries no creation time, that filename is the next best clock reference.
 _FILENAME_FORMATS = (

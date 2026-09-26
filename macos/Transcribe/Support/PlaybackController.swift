@@ -10,16 +10,32 @@ import Foundation
 @MainActor
 @Observable
 final class PlaybackController {
+    /// What the folder actually holds. A `.wav` extracted alongside a meeting
+    /// and a `.mov` of the call are both "media", and presenting the first as
+    /// video gives the user a black rectangle to stare at.
+    enum Kind: Equatable {
+        case video
+        case audio
+    }
+
     enum Phase: Equatable {
         case none
         case checking
-        case ready
+        case ready(Kind)
         case unplayable(String)
+
+        var kind: Kind? {
+            if case .ready(let kind) = self { return kind }
+            return nil
+        }
+
+        var isReady: Bool { kind != nil }
     }
 
     private(set) var phase: Phase = .none
     private(set) var player: AVPlayer?
     private(set) var url: URL?
+    private(set) var duration: Double = 0
 
     /// Discards the result of a check that a newer one has superseded.
     private var loadID = 0
@@ -39,7 +55,9 @@ final class PlaybackController {
 
         let asset = AVURLAsset(url: url)
         do {
-            let playable = try await asset.load(.isPlayable)
+            // Both loaded in one call: two awaits would let a newer open()
+            // interleave between them.
+            let (playable, videoTracks) = try await asset.load(.isPlayable, .tracks)
             guard id == loadID else { return }
             guard playable else {
                 // OBS writes .qta containers carrying Apple Positional Audio
@@ -49,9 +67,14 @@ final class PlaybackController {
                 phase = .unplayable("\(url.pathExtension.uppercased()) is not playable here.")
                 return
             }
-            let item = AVPlayerItem(asset: asset)
-            player = AVPlayer(playerItem: item)
-            phase = .ready
+
+            let hasVideo = videoTracks.contains { $0.mediaType == .video }
+            let seconds = try? await asset.load(.duration).seconds
+            guard id == loadID else { return }
+
+            player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+            duration = (seconds?.isFinite == true) ? (seconds ?? 0) : 0
+            phase = .ready(hasVideo ? .video : .audio)
         } catch is CancellationError {
             return
         } catch {
@@ -79,5 +102,6 @@ final class PlaybackController {
         player?.pause()
         player = nil
         url = nil
+        duration = 0
     }
 }

@@ -360,3 +360,17 @@ def test_resolve_speaker_names_ignores_fragment_voices(monkeypatch, config):
     resolve_speaker_names(meeting, config)
     assert "Speaker 1" in captured["user"]
     assert "Speaker 2 (" not in captured["user"]
+
+
+def test_the_user_joins_the_naming_roster():
+    """You are in every recording you make, invited or not."""
+    assert notes_mod.naming_roster(["Sam"], {"user_name": "Caleb"}) == ["Sam", "Caleb"]
+
+
+def test_the_user_is_not_added_twice():
+    assert notes_mod.naming_roster(["caleb"], {"user_name": "Caleb"}) == ["caleb"]
+
+
+def test_no_user_name_leaves_the_roster_alone():
+    assert notes_mod.naming_roster(["Sam"], {}) == ["Sam"]
+    assert notes_mod.naming_roster(None, {}) == []

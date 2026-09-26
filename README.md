@@ -192,20 +192,32 @@ where you would otherwise decide.
 transcribe meeting.mov              # process one recording
 transcribe meeting.mov --no-split   # treat it as a single meeting
 transcribe meeting.mov --flat       # legacy: one transcript, one summary, no meetings
-transcribe watch ~/Movies           # watch a folder in the foreground
-transcribe voicememos               # list macOS Voice Memos
-transcribe voicememos --import      # import Voice Memos as meetings
+transcribe watch ~/Movies           # watch a folder in the foreground (and import Voice Memos)
+transcribe voicememos               # list recent Voice Memos, and which were imported
+transcribe voicememos --import      # import the ones not imported yet (--force for all)
+transcribe notes <folder>           # write notes from a transcript a folder already has
+transcribe notes --missing          # ...for every meeting that has none (--since-days=N)
+transcribe actions                  # outstanding action items across every meeting
+transcribe actions --mine           # only yours and unassigned ones (needs user_name)
+transcribe actions done <ref>       # tick one off; the macOS app sees it too
+transcribe search "bgp session"     # search every transcript and set of notes
+transcribe categorise --all         # label meetings that have no categories yet
+transcribe tag <folder> --set Company=Acme   # set a category or grouping field by hand
+transcribe tidy                     # file processed recordings left in the watch folder
 transcribe setup-daemon             # install the launchd agent (runs at login)
 transcribe doctor                   # check tools, models, keys, permissions
 transcribe calendar-check           # grant and verify macOS Calendar access
 transcribe config                   # show configuration and its location
 transcribe autorecord               # record meetings automatically via OBS
 transcribe setup-autorecord         # install the auto-record launchd agent
+transcribe record start|stop        # drive an OBS recording by hand
 transcribe menubar                  # menu bar app with a manual override
 transcribe mic                      # show inputs, cameras, and whether it would record
-transcribe voicememos               # list recent Voice Memos recordings
-transcribe voicememos --import      # import Voice Memos through the notes pipeline
 ```
+
+A failed run exits non-zero, and a recording another `transcribe` process is already working
+on exits `75` and is left to that process, so the launchd watcher and the macOS app never
+file the same recording twice.
 
 ## How the pieces work
 
@@ -310,6 +322,11 @@ Configuration lives in `~/.transcribe/config.yaml`. A fully documented template 
 | `diarization_enabled` | `true` | Needs `transcribe[diarize]`. |
 | `known_participants` | `[]` | Names to prefer when identifying speakers. |
 | `calendar_enabled` | `true` | Needs `transcribe[calendar]` and permission. |
+| `user_name` | _(empty)_ | Your name: finds your action items, and names your voice. |
+| `voice_memos_auto_import` | `true` | `transcribe watch` and the app import new Voice Memos. Needs Full Disk Access. |
+| `voice_memos_lookback_days` | `7` | How far back an unattended import looks. |
+| `auto_categorise` | `true` | Label each meeting with categories as it is filed. |
+| `group_fields` | `[]` | Extra groupings with one value per meeting, e.g. `[Company, Project]`. |
 
 If no API key is set, summarization is skipped gracefully — you still get the transcript
 and the speaker-attributed segments.

@@ -126,6 +126,42 @@ known_participants: []
 #   - Sam Okoro
 #   - Priya Nair
 
+# --- You ------------------------------------------------------------------------
+
+# Your own name. Finds your action items ("transcribe actions --mine", the app's
+# Mine filter, what goes to Reminders) and is offered when naming voices, since
+# you are in every recording you make.
+user_name: ""
+
+# --- Automation -----------------------------------------------------------------
+
+# Import new Voice Memos as meetings. "transcribe watch" and the macOS app check
+# every few minutes. Each memo is imported once, from a copy, so it stays in
+# Voice Memos. Reading the Voice Memos library needs Full Disk Access.
+voice_memos_auto_import: true
+voice_memos_lookback_days: 7
+
+# Label each meeting with categories as it is filed.
+auto_categorise: true
+
+# Extra ways to group meetings, one value each, filled in by the categoriser and
+# editable in the app or with "transcribe tag <folder> --set Company=Acme".
+group_fields: []
+# group_fields:
+#   - Company
+#   - Project
+
+# --- macOS app ------------------------------------------------------------------
+# Read by the app only. The command line ignores them.
+
+# Process new recordings in the watch folder without being asked.
+# auto_process_recordings: true
+# Write notes for recent meetings that have a transcript but none.
+# auto_notes: true
+# Keep action items in a Reminders list, ticked off in both directions.
+# reminders_sync: true
+# reminders_scope: mine      # or: all
+
 # --- Calendar ---------------------------------------------------------------
 
 # Match the recording against calendar events for real meeting titles and

@@ -31,6 +31,33 @@ def base_config():
     }
 
 
+@pytest.fixture(autouse=True)
+def private_config_dir(tmp_path, monkeypatch):
+    """Keep every test out of the real ``~/.transcribe``.
+
+    Claims, the Voice Memos ledger and the action item state all live there,
+    and a test run that wrote into the developer's own copy would both leak
+    state between tests and quietly edit real data.
+    """
+    config_dir = tmp_path / ".transcribe"
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(config_mod, "CONFIG_FILE", config_dir / "config.yaml")
+    return config_dir
+
+
+@pytest.fixture(autouse=True)
+def no_real_categorising(monkeypatch):
+    """Stop the automatic categorising after notes from reaching a real provider.
+
+    Notes tests stub ``notes.complete_json``; categorising runs straight after
+    and calls its own import of it, which would otherwise go to the network with
+    the test's fake key. Tests of categorising patch it again themselves.
+    """
+    from transcribe import categorise
+
+    monkeypatch.setattr(categorise, "complete_json", lambda *a, **k: None)
+
+
 @pytest.fixture
 def patched_config_paths(tmp_path, monkeypatch):
     """Redirect config.py's CONFIG_DIR / CONFIG_FILE into tmp_path.

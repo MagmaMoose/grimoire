@@ -8,6 +8,11 @@ Usage:
   transcribe autorecord             - Record meetings automatically via OBS
   transcribe setup-autorecord       - Install the auto-record agent
   transcribe voicememos [--import]  - List/import macOS Voice Memos
+  transcribe notes <folders>        - Write notes from an existing transcript
+  transcribe actions                - List and tick off action items
+  transcribe search <words>         - Search every transcript
+  transcribe tag <folder>           - Show or change categories and fields
+  transcribe tidy                   - File processed recordings left in the watch folder
   transcribe menubar                - Menu bar app with a manual override
   transcribe config                 - Configure settings
   transcribe doctor                 - Check dependencies and models
@@ -29,6 +34,10 @@ from .watch import watch_directory
 
 # Run TLS fixup as early as possible, before any network clients are created
 _ensure_tls_ca_bundle()
+
+# sysexits' EX_NOPERM. The app reads it as "needs a permission grant" and offers
+# the settings page, rather than reporting a generic failure.
+EXIT_NEEDS_PERMISSION = 77
 
 # Force line-buffered output for daemon logging
 try:
@@ -259,10 +268,14 @@ def _voice_memos(args, selected):
     from datetime import datetime, timedelta
 
     from .voicememos import (
+        VoiceMemosPermissionDenied,
         VoiceMemosUnavailable,
         describe_library,
+        import_memos,
         inspect_storage,
         list_memos,
+        load_imported,
+        memo_key,
     )
 
     config = load_config()
@@ -305,6 +318,9 @@ def _voice_memos(args, selected):
 
     try:
         memos = list_memos(since=since)
+    except VoiceMemosPermissionDenied as e:
+        print(f"✗ {e}")
+        return EXIT_NEEDS_PERMISSION
     except VoiceMemosUnavailable as e:
         print(f"✗ {e}")
         return 1
@@ -313,6 +329,7 @@ def _voice_memos(args, selected):
         print("No Voice Memos found in that window. Try --all, or --debug to see the schema.")
         return 0
 
+    imported = load_imported()
     if "--import" not in args:
         print(f"\n{len(memos)} memo(s):\n")
         for index, memo in enumerate(memos, 1):
@@ -320,11 +337,10 @@ def _voice_memos(args, selected):
             mins = f"{float(memo['duration']) / 60:.0f} min" if memo["duration"] else "?"
             words = len(memo["transcript"].split()) if memo["transcript"] else 0
             state = f"{words:,} words" if words else "NO TRANSCRIPT"
-            print(f"  {index}. {when}  {mins:>7}  {state:>14}  {memo['title']}")
-        print("\nAdd --import to run these through the notes pipeline.\n")
+            done = "imported" if memo_key(memo) in imported else ""
+            print(f"  {index}. {when}  {mins:>7}  {state:>14}  {done:>8}  {memo['title']}")
+        print("\nAdd --import to run the ones not yet imported through the notes pipeline.\n")
         return 0
-
-    from .processing import process_transcript, process_video_file
 
     # Transcribing locally beats reusing the app's transcript. Measured on a
     # 53-minute meeting: 7,713 words against roughly 5,000, and every technical
@@ -333,46 +349,49 @@ def _voice_memos(args, selected):
     # "humanitis". The local path also produces timestamps and speaker
     # attribution, neither of which the app's transcript carries.
     prefer_app = "--use-app-transcript" in args
-
-    for memo in memos:
-        if prefer_app and memo["transcript"]:
-            process_transcript(
-                memo["audio_path"],
-                memo["transcript"],
-                config,
-                title=memo["title"],
-                recorded_at=memo["recorded_at"],
-                duration=memo["duration"],
-            )
-        elif memo["audio_path"]:
-            process_video_file(memo["audio_path"], config)
-        elif memo["transcript"]:
-            # No readable audio, so the app's transcript beats nothing.
-            print(f"{memo['title']!r}: audio unreadable, using the Voice Memos transcript")
-            process_transcript(
-                None,
-                memo["transcript"],
-                config,
-                title=memo["title"],
-                recorded_at=memo["recorded_at"],
-                duration=memo["duration"],
-            )
-        else:
-            print(f"Skipping {memo['title']!r}: no readable audio and no transcript")
-    return 0
+    # Oldest first, so meetings are filed in the order they happened.
+    memos.sort(key=lambda memo: memo["recorded_at"] or datetime.min)
+    done, skipped, failed = import_memos(
+        memos, config, force="--force" in args, prefer_app=prefer_app
+    )
+    print(f"\nVoice Memos: {done} imported, {skipped} already imported, {failed} failed")
+    if skipped and "--force" not in args:
+        print("  (--force imports a memo again)")
+    return 1 if failed and not done else 0
 
 
 def _print_usage():
     print("Usage:")
-    print("  transcribe <video_file> [--json] [--flat] [--no-split]")
+    print("  transcribe <video_file> [--json] [--flat] [--no-split] [--keep-source]")
     print("                                    - Transcribe a single file")
     print("  transcribe watch [directory]      - Watch directory for new files")
     print("  transcribe setup-daemon           - Install background daemon")
     print("  transcribe autorecord             - Record meetings automatically via OBS")
     print("  transcribe setup-autorecord       - Install the auto-record agent")
+    print("  transcribe notes <folders>        - Write notes from an existing transcript")
+    print("       --missing      every meeting with a transcript and no notes")
+    print("       --since-days=N only meetings from the last N days")
+    print("  transcribe categorise <folders>   - Label meetings with categories")
+    print("       --all          every meeting that has none yet")
+    print("       --overwrite    replace categories that are already set")
+    print("  transcribe tag <folder>           - Show or change a meeting's categories")
+    print("       --add NAME / --remove NAME   a category")
+    print("       --set FIELD=VALUE / --unset FIELD   a grouping field, e.g. Company")
+    print("  transcribe actions                - Outstanding action items, every meeting")
+    print("       --mine         only yours and unassigned ones (needs user_name)")
+    print("       --done / --all completed ones, or everything")
+    print("       --since-days=N only meetings from the last N days")
+    print("       --json         machine-readable")
+    print("  transcribe actions done|undo <ref> - Tick an action off, or back on")
+    print("  transcribe search <words>         - Search every transcript and set of notes")
+    print("  transcribe tidy [--dry-run]       - File processed recordings still in the")
+    print("                                      watch folder")
+    print("  transcribe record start|stop      - Drive an OBS recording")
     print("  transcribe voicememos [--import]  - List/import macOS Voice Memos")
     print("       --debug        show the library schema")
     print("       --all          every memo, not just the last day")
+    print("       --since-days=N memos from the last N days")
+    print("       --force        import memos that were imported before")
     print("       --use-app-transcript  reuse the app's transcript instead of")
     print("                             transcribing locally (faster, worse)")
     print("  transcribe menubar                - Menu bar app with a manual override")
@@ -405,6 +424,7 @@ def main():
         "--flat": "flat",
         "--no-split": "no_split",
         "--no-diarize": "no_diarize",
+        "--keep-source": "keep_source",
     }
     selected = {name for arg, name in flags.items() if arg in argv}
     args = [arg for arg in argv if arg not in flags]
@@ -449,6 +469,93 @@ def main():
         except MenuBarUnavailable as e:
             print(f"✗ {e}")
             sys.exit(1)
+    elif command == "notes":
+        from .from_transcript import folders_missing_notes, generate_for_folders
+
+        config = _apply_flags(load_config(), selected)
+        folders = [a for a in args[1:] if not a.startswith("--")]
+        if "--missing" in args:
+            since = _since_days(args)
+            folders += [
+                str(folder)
+                for folder in folders_missing_notes(config["destination_directory"], since)
+            ]
+            if not folders:
+                print("Every meeting already has notes.")
+                sys.exit(0)
+        if not folders:
+            print("Usage: transcribe notes <meeting folder> [more folders]")
+            print("       transcribe notes --missing [--since-days=N]")
+            sys.exit(1)
+        sys.exit(generate_for_folders(folders, config))
+    elif command == "actions":
+        from .actions import run as run_actions
+
+        sys.exit(run_actions(args[1:], load_config()))
+    elif command == "search":
+        from .search import run as run_search
+
+        sys.exit(run_search(args[1:], load_config()))
+    elif command == "tag":
+        from .categorise import run_tag
+
+        sys.exit(run_tag(args[1:], load_config()))
+    elif command == "tidy":
+        from .tidy import tidy
+
+        _moved, failed = tidy(load_config(), dry_run="--dry-run" in args)
+        sys.exit(1 if failed else 0)
+    elif command == "categorise" or command == "categorize":
+        from .categorise import categorise_folders
+
+        config = load_config()
+        folders = [a for a in args[1:] if not a.startswith("--")]
+        if not folders and "--all" not in args:
+            # Running over the whole library is one LLM call per meeting, so it
+            # has to be asked for. Bare "categorise", and anything whose only
+            # arguments are flags, used to do exactly that.
+            print("Usage: transcribe categorise <meeting folder> [more folders]")
+            print("       transcribe categorise --all      every meeting without categories")
+            print("       --overwrite                      replace categories already set")
+            sys.exit(1)
+        if not folders:
+            destination = Path(config["destination_directory"])
+            folders = sorted(str(p) for p in destination.glob("*") if p.is_dir())
+            print(f"Categorising up to {len(folders)} meeting(s) in {destination}")
+        sys.exit(categorise_folders(folders, config, overwrite="--overwrite" in args))
+    elif command == "record":
+        from .autorecord import (
+            ObsUnavailable,
+            connect,
+            is_recording,
+            launch_obs,
+            start_recording,
+            stop_recording,
+        )
+
+        action = args[1] if len(args) > 1 else "status"
+        if action not in {"start", "stop", "status"}:
+            print(f"Unknown action {action!r}. Use: transcribe record start|stop|status")
+            sys.exit(1)
+
+        config = load_config()
+        try:
+            if action == "start":
+                launch_obs()
+            client = connect(config)
+            if action == "start":
+                print("✓ Recording" if start_recording(client) else "Already recording")
+            elif action == "stop":
+                # stop_recording returns the output path, which OBS does not
+                # always report, so it cannot stand in for "did it stop".
+                was_recording = is_recording(client)
+                stop_recording(client)
+                print("✓ Stopped" if was_recording else "Not recording")
+            else:
+                print("recording" if is_recording(client) else "idle")
+        except ObsUnavailable as e:
+            print(f"✗ {e}")
+            sys.exit(1)
     elif command == "watch":
         config = _apply_flags(load_config(), selected)
         directory = args[1] if len(args) > 1 else config["watch_directory"]
@@ -461,7 +568,23 @@ def main():
             sys.exit(1)
 
         config = _apply_flags(load_config(), selected)
-        process_video_file(video_file, config, write_json="write_json" in selected)
+        status = process_video_file(video_file, config, write_json="write_json" in selected)
+        # Non-zero only: a successful run exits the normal way, and the app
+        # tells "failed" from "someone else has it" by the status.
+        if isinstance(status, int) and status:
+            sys.exit(status)
+
+
+def _since_days(args):
+    """The value of ``--since-days=N``, or None."""
+    for arg in args:
+        if arg.startswith("--since-days="):
+            try:
+                return float(arg.split("=", 1)[1])
+            except ValueError:
+                print(f"✗ Not a number of days: {arg}")
+                sys.exit(1)
+    return None
 
 
 def _apply_flags(config, selected):
@@ -473,6 +596,11 @@ def _apply_flags(config, selected):
         config["split_video"] = False
     if "no_diarize" in selected:
         config["diarization_enabled"] = False
+    if "keep_source" in selected:
+        # Leave the recording where it is. Reprocessing a meeting's own media
+        # would otherwise move it out of the folder being reprocessed and into
+        # whichever new folder the run produced.
+        config["move_source_video"] = False
     return config
 
 

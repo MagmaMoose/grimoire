@@ -38,6 +38,14 @@ targets:
         # would still not let it drive the CLI.
         ENABLE_APP_SANDBOX: NO
         COMBINE_HIDPI_IMAGES: YES
+        CODE_SIGN_ENTITLEMENTS: Transcribe/Resources/Transcribe.entitlements
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+      configs:
+        Release:
+          # Ad-hoc signing makes Xcode inject com.apple.security.get-task-allow,
+          # which lets any process attach a debugger to the shipped app. It is a
+          # debug entitlement and has no business in a Release build.
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     scheme:
       # Without this the autocreated scheme runs zero tests and still reports
       # success.

@@ -101,12 +101,7 @@ struct MeetingRecord: Codable, Sendable {
 
         /// An owner the pipeline could not determine is written as
         /// "Unassigned"; the view should show that as absent, not as a person.
-        var assignedOwner: String? {
-            let trimmed = owner.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty, trimmed.caseInsensitiveCompare("Unassigned") != .orderedSame
-            else { return nil }
-            return trimmed
-        }
+        var assignedOwner: String? { Owner.named(owner) }
     }
 
     struct Correction: Codable, Sendable, Identifiable {
@@ -203,5 +198,47 @@ enum PipelineDate {
             return date
         }
         return decoder
+    }
+}
+
+
+/// Who owns an action item.
+///
+/// The pipeline writes "Unassigned" when it could not tell, and when nobody put
+/// a name to a voice it writes the diarization label instead: "Speaker 2". That
+/// says which voice, not whose job it is, and a filter offering "Speaker 1,
+/// Speaker 2, Speaker 3" offers nothing. Both read as nobody.
+enum Owner {
+    static func named(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !isAnonymous(trimmed) else { return nil }
+        return trimmed
+    }
+
+    /// The same pattern the command line uses, so `transcribe actions` and the
+    /// app agree on who owns what.
+    static func isAnonymous(_ text: String) -> Bool {
+        anonymous.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static let anonymous = try! NSRegularExpression(
+        pattern:
+            "^(unassigned|unknown( speaker)?|n/?a|none|tbd|nobody|"
+            + "(speaker|spk|voice|participant)[\\s_#-]*([0-9]+|[a-z]))$",
+        options: [.caseInsensitive]
+    )
+
+    /// True when `owner` is the user, by full name or by first name. The notes
+    /// say "Caleb" as often as "Caleb Sargeant".
+    static func isUser(_ owner: String, named user: String) -> Bool {
+        guard let name = named(owner) else { return false }
+        let me = user.trimmingCharacters(in: .whitespaces)
+        guard !me.isEmpty else { return false }
+        if name.caseInsensitiveCompare(me) == .orderedSame { return true }
+        guard let first = me.split(separator: " ").first?.lowercased() else { return false }
+        let punctuation = CharacterSet(charactersIn: ".,")
+        return name.split(separator: " ")
+            .map { $0.lowercased().trimmingCharacters(in: punctuation) }
+            .contains(first)
     }
 }

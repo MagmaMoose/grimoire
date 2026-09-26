@@ -126,3 +126,85 @@ def test_watchdog_import_error_exits(monkeypatch, base_config):
     with pytest.raises(SystemExit) as exc:
         watch.watch_directory("/x", base_config)
     assert exc.value.code == 1
+
+
+# --- Voice Memos polling ----------------------------------------------------------
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_voice_memos_are_polled_every_few_minutes(monkeypatch):
+    import threading
+
+    import transcribe.voicememos as vm
+
+    calls = []
+    monkeypatch.setattr(vm, "import_new_memos", lambda config: calls.append(1) or (0, 0, 0))
+    clock = _Clock()
+    poller = watch.VoiceMemoPoller({}, threading.Lock(), clock=clock)
+    poller.poll()
+    poller.poll()
+    assert len(calls) == 1
+    clock.now += watch.VOICE_MEMOS_POLL_SECONDS
+    poller.poll()
+    assert len(calls) == 2
+
+
+def test_voice_memos_polling_can_be_switched_off(monkeypatch):
+    import threading
+
+    import transcribe.voicememos as vm
+
+    monkeypatch.setattr(vm, "import_new_memos", lambda config: pytest.fail("must not import"))
+    poller = watch.VoiceMemoPoller({"voice_memos_auto_import": False}, threading.Lock())
+    assert poller.poll() is None
+
+
+def test_a_permission_failure_backs_off_for_an_hour(monkeypatch, capsys):
+    import threading
+
+    import transcribe.voicememos as vm
+
+    def denied(config):
+        raise vm.VoiceMemosPermissionDenied("needs Full Disk Access")
+
+    monkeypatch.setattr(vm, "import_new_memos", denied)
+    clock = _Clock()
+    poller = watch.VoiceMemoPoller({}, threading.Lock(), clock=clock)
+    poller.poll()
+    assert poller.next_check == watch.VOICE_MEMOS_BLOCKED_SECONDS
+    assert "paused for an hour" in capsys.readouterr().out
+
+
+def test_no_voice_memos_library_stops_polling(monkeypatch):
+    import threading
+
+    import transcribe.voicememos as vm
+
+    def missing(config):
+        raise vm.VoiceMemosUnavailable("Voice Memos is not set up on this Mac")
+
+    monkeypatch.setattr(vm, "import_new_memos", missing)
+    poller = watch.VoiceMemoPoller({}, threading.Lock(), clock=_Clock())
+    poller.poll()
+    assert poller.next_check == float("inf")
+
+
+def test_an_unexpected_failure_does_not_stop_the_watcher(monkeypatch, capsys):
+    import threading
+
+    import transcribe.voicememos as vm
+
+    def explode(config):
+        raise RuntimeError("sqlite said no")
+
+    monkeypatch.setattr(vm, "import_new_memos", explode)
+    poller = watch.VoiceMemoPoller({}, threading.Lock(), clock=_Clock())
+    assert poller.poll() is None
+    assert "Voice Memos import failed" in capsys.readouterr().out

@@ -259,6 +259,21 @@ def _naming_context(meeting, known_participants=None, window=SPEAKER_CONTEXT_SEC
     return _condense(text, SPEAKER_TOKEN_BUDGET)
 
 
+def naming_roster(known, config):
+    """The names a voice may be given: the attendees, plus the user.
+
+    The user is in every recording they make, and is the one person a calendar
+    invite most often leaves off (the organiser is not always listed). Adding
+    them to the roster is what lets their own voice be named rather than stay
+    "Speaker 1" in their own notes.
+    """
+    roster = list(known or [])
+    me = (config.get("user_name") or "").strip()
+    if me and not any(me.lower() == str(name).strip().lower() for name in roster):
+        roster.append(me)
+    return roster
+
+
 def resolve_speaker_names(meeting, config, known_participants=None):
     """Replace anonymous ``Speaker N`` labels with real names where evidence exists.
 

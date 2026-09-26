@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Not sandboxed. The app reads meeting folders the user points it at,
+	     which can be anywhere, and drives a Homebrew CLI. Sandboxing would mean
+	     a security-scoped bookmark for every folder and would still not permit
+	     the subprocess. -->
+
+	<!-- Under the hardened runtime, which notarisation requires, sending Apple
+	     events needs this entitlement as well as NSAppleEventsUsageDescription.
+	     Without it the Notes export fails with errAEEventNotPermitted (-1743)
+	     even after the user has said yes. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+
+	<!-- The hardened runtime blocks a process from being a debugger target and
+	     from loading unsigned libraries; neither applies here. It does not
+	     block Process(), so running the CLI needs nothing extra. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<false/>
+</dict>
+</plist>
