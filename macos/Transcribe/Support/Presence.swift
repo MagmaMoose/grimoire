@@ -186,11 +186,13 @@ enum Presence {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var identifier: CFString = "" as CFString
-        var size = UInt32(MemoryLayout<CFString>.size)
-        guard AudioObjectGetPropertyData(process, &address, 0, nil, &size, &identifier) == noErr
+        // Returned retained, so it is taken as an Unmanaged and released once.
+        var identifier: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(process, &address, 0, nil, &size, &identifier) == noErr,
+            let value = identifier?.takeRetainedValue()
         else { return nil }
-        let text = identifier as String
+        let text = value as String
         return text.isEmpty ? nil : text
     }
 

@@ -41,7 +41,7 @@ final class Automation {
     /// How long a recording must sit unchanged before it counts as finished.
     /// OBS grows the file for the whole meeting, and processing half of one
     /// files half a meeting.
-    static let settleSeconds: Double = 30
+    nonisolated static let settleSeconds: Double = 30
     static let tickSeconds: Double = 30
     /// Meetings older than this never get notes written on their own, so a
     /// library of old transcripts does not quietly become a large bill.
