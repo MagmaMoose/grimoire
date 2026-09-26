@@ -12,4 +12,4 @@ permissions:
 
 jobs:
   security:
-    uses: magmamoose/chargate/.github/workflows/gate.yml@645a151d1ab9e7feea7d7dad692c85dd9c616bf9 # v2.11.56
+    uses: magmamoose/chargate/.github/workflows/gate.yml@56d2be8b29c5b26802cbc1fb17417e1de0419821 # v2.11.61
