@@ -11,6 +11,8 @@ struct MeetingDetailView: View {
     @Environment(TagIndex.self) private var tags
     @Environment(Pipeline.self) private var pipeline
     @Environment(AppleExport.self) private var appleExport
+    @Environment(RemindersSync.self) private var reminders
+    @Environment(Automation.self) private var automation
     @Environment(Settings.self) private var settings
     @State private var contents: MeetingFolder.Contents?
     @State private var record: MeetingRecord?
@@ -40,6 +42,9 @@ struct MeetingDetailView: View {
         .navigationTitle(record?.displayTitle ?? folder.displayName)
         .navigationSubtitle(subtitle)
         .toolbar {
+            // Every item carries its name as well as its icon. Icon-only, the
+            // only way to learn what each did was to hover and wait for the
+            // tooltip, one button at a time.
             if playableMedia != nil {
                 ToolbarItem {
                     Toggle(isOn: $showPlayer) {
@@ -48,26 +53,19 @@ struct MeetingDetailView: View {
                             systemImage: playback.phase.kind == .audio
                                 ? "waveform" : "play.rectangle"
                         )
+                        .labelStyle(.titleAndIcon)
                     }
-                    .help("Show the recording")
+                    .help(showPlayer ? "Hide the recording" : "Show the recording")
                 }
-            }
-            ToolbarItem {
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([folder.id])
-                } label: {
-                    Label("Show in Finder", systemImage: "arrow.up.forward.app")
-                }
-                .help("Open this meeting's folder in Finder")
             }
             ToolbarItem {
                 Menu {
                     Button {
                         pipeline.notesFromTranscript(folder: folder.id)
                     } label: {
-                        Label("From the transcript", systemImage: "text.alignleft")
+                        Label("From the Transcript", systemImage: "text.alignleft")
                     }
-                    .disabled(!hasTranscript || pipeline.isRunning)
+                    .disabled(!hasTranscript || writingNotes)
                     .help("Fast: uses the transcript already saved, no re-transcribing")
 
                     Button {
@@ -75,15 +73,16 @@ struct MeetingDetailView: View {
                             folder: folder, media: playableMedia,
                             label: "Re-transcribing \(folder.displayName)")
                     } label: {
-                        Label("Re-transcribe the recording", systemImage: "waveform.badge.magnifyingglass")
+                        Label("Re-transcribe the Recording", systemImage: "waveform.badge.magnifyingglass")
                     }
-                    .disabled(playableMedia == nil || pipeline.isRunning)
+                    .disabled(playableMedia == nil || reprocessing)
                     .help("Slow: transcribes the audio again, then writes notes")
                 } label: {
                     Label(
-                        record?.notes == nil ? "Generate Notes" : "Regenerate Notes",
+                        record?.notes == nil ? "Write Notes" : "Rewrite Notes",
                         systemImage: "sparkles"
                     )
+                    .labelStyle(.titleAndIcon)
                 } primaryAction: {
                     // The common case, and the cheap one.
                     if hasTranscript {
@@ -94,7 +93,7 @@ struct MeetingDetailView: View {
                             label: "Transcribing \(folder.displayName)")
                     }
                 }
-                .disabled(pipeline.isRunning || (!hasTranscript && playableMedia == nil))
+                .disabled(writingNotes || reprocessing || (!hasTranscript && playableMedia == nil))
                 .help(
                     hasTranscript
                         ? "Write notes from the transcript this meeting already has"
@@ -111,33 +110,59 @@ struct MeetingDetailView: View {
                     .disabled(record?.notes == nil || appleExport.isWorking)
 
                     Button {
-                        sendToReminders()
+                        Task { await automation.sendToReminders(meeting: folder.id) }
                     } label: {
                         Label(
                             actionItems.isEmpty
-                                ? "No action items"
-                                : "Send \(actionItems.count) action item(s) to Reminders",
+                                ? "No Action Items for Reminders"
+                                : "Add \(actionItems.count) Action Item\(actionItems.count == 1 ? "" : "s") to Reminders",
                             systemImage: "checklist")
                     }
-                    .disabled(actionItems.isEmpty || appleExport.isWorking)
+                    .disabled(actionItems.isEmpty || reminders.isWorking)
+
+                    Divider()
+
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([folder.id])
+                    } label: {
+                        Label("Show in Finder", systemImage: "folder")
+                    }
                 } label: {
                     Label("Share", systemImage: "square.and.arrow.up")
+                        .labelStyle(.titleAndIcon)
                 }
-                .help("Send this meeting to Notes or its actions to Reminders")
+                .help("Send this meeting to Notes, its action items to Reminders, or show it in Finder")
             }
         }
         .task {
             await load()
         }
-        .onChange(of: pipeline.state) { _, new in
+        .onChange(of: pipeline.lastCompletion) { _, completion in
             // The pipeline has just rewritten a folder. Without this the notes
             // it produced are invisible until you click away and back, which
             // makes the feature look broken when it worked. Only reload when
             // the run was about *this* meeting, or every open detail view
-            // re-reads on any run.
-            guard case .finished = new, pipeline.lastTarget == folder.id else { return }
+            // re-reads on any run. A folder the run renamed is followed by the
+            // library instead, since this one no longer exists.
+            guard let completion, completion.job.target == folder.id,
+                completion.renamed.isEmpty
+            else { return }
             Task { await load(refresh: true) }
         }
+    }
+
+    private var writingNotes: Bool { pipeline.has(.notes(folder.id)) }
+
+    private var reprocessing: Bool {
+        guard let media = playableMedia else { return false }
+        return pipeline.has(.reprocess(media))
+    }
+
+    /// What the notes pane should offer when there are no notes.
+    private var missingNotes: NotesPane.Missing {
+        if writingNotes || reprocessing { return .writing }
+        if !hasTranscript { return .noTranscript }
+        return settings.hasLLMCredential ? .canWrite : .noProvider
     }
 
     /// The recording to play.
@@ -176,21 +201,6 @@ struct MeetingDetailView: View {
         Task { await appleExport.sendToNotes(html: html, title: record.displayTitle, folder: name) }
     }
 
-    private func sendToReminders() {
-        guard let record else { return }
-        let list = settings.config.values[ConfigKey.remindersList]
-        Task {
-            await appleExport.sendToReminders(
-                actions: actionItems,
-                meetingTitle: record.displayTitle,
-                meetingFolder: folder.id,
-                meetingDate: folder.date,
-                listID: list,
-                dueDate: nil
-            )
-        }
-    }
-
     private var subtitle: String {
         var parts: [String] = []
         if let date = folder.date {
@@ -226,6 +236,9 @@ struct MeetingDetailView: View {
                 if appleExport.status != .idle {
                     AppleExportBar()
                 }
+                if reminders.status != .idle {
+                    RemindersStatusBar()
+                }
                 Divider()
 
                 Picker("View", selection: $tab) {
@@ -254,6 +267,8 @@ struct MeetingDetailView: View {
                         record: record,
                         legacySummary: legacySummary,
                         loadError: loadError,
+                        missing: missingNotes,
+                        onWrite: { pipeline.notesFromTranscript(folder: folder.id) },
                         onSeek: seek
                     )
                 case .transcript:
@@ -335,16 +350,20 @@ struct MeetingDetailView: View {
     }
 }
 
-/// The meeting's categories, editable inline.
+/// The meeting's categories and grouping fields, editable inline.
 private struct TagBar: View {
     @Environment(TagIndex.self) private var tags
+    @Environment(Settings.self) private var settings
     let folder: MeetingFolder
 
     @State private var draft = ""
     @State private var adding = false
+    /// The field a new value is being typed for, if any.
+    @State private var editingField: String?
     @State private var error: String?
 
     private var current: [String] { tags.tags(for: folder.id) }
+    private var fields: [String] { settings.list(ConfigKey.groupFields) }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -369,16 +388,16 @@ private struct TagBar: View {
                 .background(.tint.opacity(0.15), in: Capsule())
             }
 
-            if adding {
-                TextField("Category", text: $draft)
+            if adding || editingField != nil {
+                TextField(editingField ?? "Category", text: $draft)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 140)
                     .onSubmit(commit)
                 Button("Add", action: commit).disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
-                Button("Cancel") { adding = false; draft = "" }
+                Button("Cancel") { cancelEditing() }
             } else {
                 Menu {
-                    Button("New category…") { adding = true }
+                    Button("New Category…") { adding = true }
                     // Offer what is already in use, so the same category is not
                     // retyped three different ways.
                     let unused = tags.allTags.filter { existing in
@@ -398,6 +417,10 @@ private struct TagBar: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("Categorise this meeting")
+
+                ForEach(fields, id: \.self) { field in
+                    fieldMenu(field)
+                }
             }
 
             Spacer()
@@ -410,13 +433,54 @@ private struct TagBar: View {
         .padding(.vertical, 6)
     }
 
+    /// One grouping field: its value, the values other meetings use, and a way
+    /// to type a new one.
+    private func fieldMenu(_ field: String) -> some View {
+        let value = tags.value(of: field, for: folder.id)
+        return Menu {
+            ForEach(tags.values(of: field), id: \.self) { option in
+                Button {
+                    Task { await apply { try await tags.set(field: field, to: option, for: folder.id) } }
+                } label: {
+                    if option == value {
+                        Label(option, systemImage: "checkmark")
+                    } else {
+                        Text(option)
+                    }
+                }
+            }
+            if !tags.values(of: field).isEmpty { Divider() }
+            Button("New \(field)…") { editingField = field }
+            if value != nil {
+                Button("Clear \(field)") {
+                    Task { await apply { try await tags.set(field: field, to: nil, for: folder.id) } }
+                }
+            }
+        } label: {
+            Text(value.map { "\(field): \($0)" } ?? "\(field)…")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Which \(field.lowercased()) this meeting belongs to, for grouping the sidebar")
+    }
+
     private func commit() {
         let value = draft.trimmingCharacters(in: .whitespaces)
         guard !value.isEmpty else { return }
-        let tag = value
-        draft = ""
+        let field = editingField
+        cancelEditing()
+        if let field {
+            Task { await apply { try await tags.set(field: field, to: value, for: folder.id) } }
+        } else {
+            Task { await apply { try await tags.set(current + [value], for: folder.id) } }
+        }
+    }
+
+    private func cancelEditing() {
         adding = false
-        Task { await apply { try await tags.set(current + [tag], for: folder.id) } }
+        editingField = nil
+        draft = ""
     }
 
     private func apply(_ change: () async throws -> Void) async {

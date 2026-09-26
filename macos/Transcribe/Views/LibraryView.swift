@@ -9,6 +9,8 @@ struct LibraryView: View {
     @Environment(WatchQueue.self) private var queue
     @Environment(MeetingLibrary.self) private var library
     @Environment(AppCommands.self) private var commands
+    @Environment(Automation.self) private var automation
+    @Environment(Completions.self) private var completions
 
     @State private var selection: Selection?
     @State private var search = ""
@@ -19,6 +21,12 @@ struct LibraryView: View {
     @State private var seekTarget: URL?
     @State private var lastMeeting: MeetingFolder?
     @State private var viewingResult = false
+    /// A folder a run renamed while it was selected, to select again once the
+    /// library has read it under its new name.
+    @State private var followRename: String?
+    @State private var addingGrouping = false
+    @State private var newGrouping = ""
+    @AppStorage("libraryGroupBy") private var groupingID = LibraryGrouping.month.id
 
     /// What the detail pane is showing. A meeting is one case among several so
     /// the action list and the queue are first-class destinations rather than
@@ -28,6 +36,16 @@ struct LibraryView: View {
         case actions
         case queue
     }
+
+    private var grouping: LibraryGrouping {
+        let chosen = LibraryGrouping(id: groupingID)
+        // A field removed in Settings falls back rather than grouping every
+        // meeting under "No Company".
+        if case .field(let name) = chosen, !groupFields.contains(name) { return .month }
+        return chosen
+    }
+
+    private var groupFields: [String] { settings.list(ConfigKey.groupFields) }
 
     /// True while the results list should be showing.
     ///
@@ -54,11 +72,12 @@ struct LibraryView: View {
         .toolbar { toolbar }
         .task(id: settings.folder(ConfigKey.destination)) {
             // Reloads on its own when the folder is changed in Settings.
-            await refresh()
+            await automation.refresh()
         }
         // Menu commands live in the App scene and cannot reach this view's
         // state directly, so they raise a token the view acts on.
-        .onChange(of: commands.refreshToken) { Task { await refresh() } }
+        .onChange(of: commands.refreshToken) { Task { await automation.refresh() } }
+        .onChange(of: commands.chooseFolderToken) { chooseFolder() }
         .onChange(of: commands.request) { _, request in
             guard let request else { return }
             search = ""
@@ -84,10 +103,33 @@ struct LibraryView: View {
                 if hasQuery { viewingResult = true }
             }
         }
-        .onChange(of: pipeline.state) { _, new in
-            // A finished run has written new files; the library, tags and
-            // index all describe the old ones until they are re-read.
-            if case .finished = new { Task { await refresh() } }
+        .onChange(of: pipeline.lastCompletion) { _, completion in
+            // A notes run can rename "Meeting 1" to its real title. The folder
+            // the selection points at is then gone, so the new one is picked up
+            // once the library has been read again.
+            guard let completion, case .meeting(let folder) = selection,
+                let renamed = completion.renamed[folder.id]
+            else { return }
+            followRename = Completions.canonicalPath(renamed)
+        }
+        .onChange(of: library.folders) {
+            guard let target = followRename,
+                let match = library.folders.first(where: {
+                    Completions.canonicalPath($0.id) == target
+                })
+            else { return }
+            followRename = nil
+            selection = .meeting(match)
+        }
+        .alert("Group meetings by…", isPresented: $addingGrouping) {
+            TextField("Company, Project, Client…", text: $newGrouping)
+            Button("Add") { addGrouping() }
+            Button("Cancel", role: .cancel) { newGrouping = "" }
+        } message: {
+            Text(
+                "Each meeting gets one value for it, set in the bar above its notes. "
+                    + "New meetings are filled in automatically when they are categorised."
+            )
         }
     }
 
@@ -177,10 +219,10 @@ struct LibraryView: View {
                 List(selection: $selection) {
                     if !hasQuery {
                         Section {
-                            Label("Action items", systemImage: "checklist")
-                                .badge(index.allActions.count)
+                            Label("Action Items", systemImage: "checklist")
+                                .badge(outstandingActions)
                                 .tag(Selection.actions)
-                            Label("Recording queue", systemImage: "tray.full")
+                            Label("Recording Queue", systemImage: "tray.full")
                                 .badge(queue.pending.count)
                                 .tag(Selection.queue)
                         }
@@ -214,9 +256,18 @@ struct LibraryView: View {
                 if pipeline.state != .idle, !isDetailShowingPipeline {
                     PipelineStatusBar()
                 }
+                RecordingStatusBar()
                 statusFooter
             }
         }
+    }
+
+    /// Only what is still to do. The count of every action ever written grew
+    /// without end and said nothing.
+    private var outstandingActions: Int {
+        index.allActions.filter {
+            !completions.isDone(meeting: $0.meeting.folder, action: $0.action)
+        }.count
     }
 
     /// True when the detail pane is already showing the pipeline's state, so
@@ -276,19 +327,11 @@ struct LibraryView: View {
         }
     }
 
-    /// Grouped by month, newest first. `folders` is already sorted, so the
-    /// groups come out in order without a second sort.
     private var groups: [(key: String, value: [MeetingFolder])] {
-        var order: [String] = []
-        var buckets: [String: [MeetingFolder]] = [:]
-        for folder in filtered {
-            let key = folder.date.map {
-                $0.formatted(.dateTime.month(.wide).year())
-            } ?? "Undated"
-            if buckets[key] == nil { order.append(key) }
-            buckets[key, default: []].append(folder)
-        }
-        return order.map { ($0, buckets[$0] ?? []) }
+        LibraryGrouping.groups(
+            filtered, by: grouping,
+            categories: { tags.tags(for: $0) },
+            field: { name, folder in tags.value(of: name, for: folder) })
     }
 
     // MARK: - Toolbar
@@ -300,54 +343,54 @@ struct LibraryView: View {
                 Button {
                     viewingResult = false
                 } label: {
-                    Label("Back to results", systemImage: "chevron.left")
+                    Label("Back to Results", systemImage: "chevron.left")
+                        .labelStyle(.titleAndIcon)
                 }
                 .help("Return to the results for “\(search)”")
             }
         }
-        ToolbarItem {
+        ToolbarItem(placement: .navigation) {
             Menu {
-                Button("All meetings") { tagFilter = nil }
-                if !tags.allTags.isEmpty {
-                    Divider()
-                    ForEach(tags.allTags, id: \.self) { tag in
-                        Button {
-                            tagFilter = tag
-                        } label: {
-                            if tagFilter == tag {
-                                Label(tag, systemImage: "checkmark")
-                            } else {
-                                Text(tag)
-                            }
-                        }
+                Picker("Group By", selection: $groupingID) {
+                    Text("Month").tag(LibraryGrouping.month.id)
+                    Text("Category").tag(LibraryGrouping.category.id)
+                    ForEach(groupFields, id: \.self) { field in
+                        Text(field).tag(LibraryGrouping.field(field).id)
                     }
                 }
+                .pickerStyle(.inline)
+                Button("New Grouping…") { addingGrouping = true }
+
                 Divider()
-                Button("Categorise \(untagged.count) uncategorised…") { categoriseUntagged() }
-                    .disabled(pipeline.isRunning || untagged.isEmpty)
+
+                Picker("Show", selection: $tagFilter) {
+                    Text("All Meetings").tag(String?.none)
+                    ForEach(tags.allTags, id: \.self) { tag in
+                        Text(tag).tag(String?.some(tag))
+                    }
+                }
+                .pickerStyle(.inline)
+
+                Divider()
+                Button("Categorise \(untagged.count) Uncategorised…") { categoriseUntagged() }
+                    .disabled(untagged.isEmpty)
             } label: {
                 Label(
-                    tagFilter ?? "All categories",
-                    systemImage: tagFilter == nil ? "tag" : "tag.fill"
+                    tagFilter.map { "\(grouping.label): \($0)" } ?? "By \(grouping.label)",
+                    systemImage: tagFilter == nil
+                        ? "square.stack.3d.up" : "line.3.horizontal.decrease.circle.fill"
                 )
+                .labelStyle(.titleAndIcon)
             }
-            .help("Filter by category, or have the notes provider assign them")
+            .help("Group the meetings by month, category or your own fields, or show one category")
         }
-        ToolbarItem {
+        ToolbarItem(placement: .navigation) {
             Button {
-                chooseFolder()
-            } label: {
-                Label("Change Meetings Folder", systemImage: "folder.badge.gearshape")
-            }
-            .help("Change which folder this app lists meetings from")
-        }
-        ToolbarItem {
-            Button {
-                Task { await refresh() }
+                Task { await automation.refresh() }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .help("Rescan the meetings folder for new or changed meetings")
+            .help("Rescan the meetings folder for new or changed meetings (⌘R)")
         }
     }
 
@@ -363,7 +406,7 @@ struct LibraryView: View {
         Button("Write Notes from Transcript") {
             pipeline.notesFromTranscript(folder: folder.id)
         }
-        .disabled(pipeline.isRunning)
+        .disabled(pipeline.has(.notes(folder.id)))
         Button(tags.tags(for: folder.id).isEmpty ? "Categorise" : "Re-categorise") {
             pipeline.categorise(
                 folders: [folder.id],
@@ -373,7 +416,6 @@ struct LibraryView: View {
                 overwrite: !tags.tags(for: folder.id).isEmpty
             )
         }
-        .disabled(pipeline.isRunning)
         Divider()
         Menu("Category") {
             ForEach(tags.allTags, id: \.self) { tag in
@@ -393,6 +435,30 @@ struct LibraryView: View {
                 Text("No categories yet").foregroundStyle(.secondary)
             }
         }
+        ForEach(groupFields, id: \.self) { field in
+            Menu(field) {
+                ForEach(tags.values(of: field), id: \.self) { value in
+                    Button {
+                        Task { try? await tags.set(field: field, to: value, for: folder.id) }
+                    } label: {
+                        if tags.value(of: field, for: folder.id) == value {
+                            Label(value, systemImage: "checkmark")
+                        } else {
+                            Text(value)
+                        }
+                    }
+                }
+                if tags.values(of: field).isEmpty {
+                    Text("Set one from the bar above the notes").foregroundStyle(.secondary)
+                }
+                if tags.value(of: field, for: folder.id) != nil {
+                    Divider()
+                    Button("Clear \(field)") {
+                        Task { try? await tags.set(field: field, to: nil, for: folder.id) }
+                    }
+                }
+            }
+        }
     }
 
     private var untagged: [URL] {
@@ -403,11 +469,14 @@ struct LibraryView: View {
         pipeline.categorise(folders: untagged)
     }
 
-    private func refresh() async {
-        await library.load(root: settings.folder(ConfigKey.destination))
-        await tags.load(folders: library.folders)
-        index.build(folders: library.folders)
-        await queue.load(watch: settings.folder(ConfigKey.watch), library: library.folders)
+    private func addGrouping() {
+        let name = newGrouping.trimmingCharacters(in: .whitespaces)
+        newGrouping = ""
+        guard !name.isEmpty else { return }
+        if !groupFields.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+            settings.setList(ConfigKey.groupFields, groupFields + [name])
+        }
+        groupingID = LibraryGrouping.field(name).id
     }
 
     private func chooseFolder() {
@@ -431,11 +500,20 @@ struct LibraryView: View {
 
 private struct MeetingRow: View {
     @Environment(TagIndex.self) private var tags
+    @Environment(MeetingIndex.self) private var index
     let folder: MeetingFolder
+
+    /// A folder still called "Meeting 1" shows the title its notes gave it.
+    private var title: String {
+        guard folder.hasPlaceholderName, let entry = index.entry(for: folder.id),
+            !MeetingFolder.isPlaceholderTitle(entry.title), entry.title != "Untitled meeting"
+        else { return folder.displayName }
+        return entry.title
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(folder.displayName)
+            Text(title)
                 .lineLimit(2)
             HStack(spacing: 6) {
                 if let date = folder.date {
@@ -451,8 +529,14 @@ private struct MeetingRow: View {
                         .help(
                             "Saved before this pipeline wrote structured notes. "
                                 + "The transcript and summary are here; speakers, timestamps "
-                                + "and notes are not. Generate Notes rebuilds them."
+                                + "and notes are not. Write Notes rebuilds them."
                         )
+                } else if index.entry(for: folder.id)?.hasNotes == false {
+                    Text("no notes yet")
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.quaternary, in: Capsule())
+                        .help("There is a transcript but no notes. Open the meeting to write them.")
                 }
                 ForEach(tags.tags(for: folder.id).prefix(2), id: \.self) { tag in
                     Text(tag)

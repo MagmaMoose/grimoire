@@ -25,21 +25,59 @@ struct TranscribeApp: App {
     // disagree about where the meetings are or what is in them.
     @State private var settings: Settings
     @State private var monitor: RecordingMonitor
-    @State private var tags = TagIndex()
-    @State private var index = MeetingIndex()
-    @State private var pipeline = Pipeline()
-    @State private var queue = WatchQueue()
-    @State private var completions = Completions()
-    @State private var appleExport = AppleExport()
-    @State private var library = MeetingLibrary()
+    @State private var tags: TagIndex
+    @State private var index: MeetingIndex
+    @State private var pipeline: Pipeline
+    @State private var queue: WatchQueue
+    @State private var completions: Completions
+    @State private var appleExport: AppleExport
+    @State private var reminders: RemindersSync
+    @State private var library: MeetingLibrary
+    @State private var automation: Automation
     @State private var commands = AppCommands()
 
     init() {
-        // The monitor reads live settings, so both are built here rather than
-        // as separate defaults that would each load the file.
+        // A toolbar of icons is only as clear as its tooltips, and the system
+        // waits well over a second before showing one. Registered, not set, so
+        // a delay the user chose with `defaults write` still wins.
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 350])
+
+        // Built here rather than as separate defaults: several need each
+        // other, and the monitor and the automation have to start with the app,
+        // not with a window. Started from the window's first appearance, auto-
+        // record and the queue did nothing when the app launched to the menu
+        // bar alone.
         let settings = Settings()
+        let monitor = RecordingMonitor(settings: settings)
+        let tags = TagIndex()
+        let index = MeetingIndex()
+        let pipeline = Pipeline()
+        let queue = WatchQueue()
+        let completions = Completions()
+        let appleExport = AppleExport()
+        let reminders = RemindersSync(export: appleExport)
+        let library = MeetingLibrary()
+        let automation = Automation(
+            settings: settings, library: library, tags: tags, index: index, queue: queue,
+            pipeline: pipeline, completions: completions, reminders: reminders, monitor: monitor)
+
         _settings = State(initialValue: settings)
-        _monitor = State(initialValue: RecordingMonitor(settings: settings))
+        _monitor = State(initialValue: monitor)
+        _tags = State(initialValue: tags)
+        _index = State(initialValue: index)
+        _pipeline = State(initialValue: pipeline)
+        _queue = State(initialValue: queue)
+        _completions = State(initialValue: completions)
+        _appleExport = State(initialValue: appleExport)
+        _reminders = State(initialValue: reminders)
+        _library = State(initialValue: library)
+        _automation = State(initialValue: automation)
+
+        monitor.control = { [weak monitor] start in
+            await monitor?.driveOBS(start: start) ?? false
+        }
+        monitor.start()
+        automation.start()
     }
 
     var body: some Scene {
@@ -54,21 +92,34 @@ struct TranscribeApp: App {
                 .environment(monitor)
                 .environment(completions)
                 .environment(appleExport)
+                .environment(reminders)
                 .environment(library)
                 .environment(commands)
-                .task {
-                    delegate.settings = settings
-                    // Detection is native so the microphone and camera checks
-                    // are attributed to this app, not to whichever terminal
-                    // launched the CLI. That is the whole reason for a bundle.
-                    // Recording itself goes through the CLI, which already
-                    // speaks obs-websocket.
-                    monitor.control = { start in await pipeline.controlRecording(start: start) }
-                    monitor.start()
-                }
+                .environment(automation)
+                .task { delegate.settings = settings }
         }
         .windowToolbarStyle(.unified)
         .commands {
+            CommandGroup(after: .newItem) {
+                Button("Change Meetings Folder…") { commands.chooseFolder() }
+                Button("Open Meetings Folder") {
+                    if let url = settings.folder(ConfigKey.destination) {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                Button("Open Watch Folder") {
+                    if let url = settings.folder(ConfigKey.watch) {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                Divider()
+                Button("Import New Voice Memos") { automation.importVoiceMemosNow() }
+                Button("Write Missing Notes") {
+                    automation.writeNotes(for: automation.meetingsMissingNotes)
+                }
+                .disabled(automation.meetingsMissingNotes.isEmpty)
+                Button("Move Processed Recordings Out of the Watch Folder") { pipeline.tidy() }
+            }
 
             // A native app is keyboard-drivable. Without these the only way to
             // reach anything is the mouse.
@@ -84,20 +135,8 @@ struct TranscribeApp: App {
                     .keyboardShortcut("r", modifiers: .command)
             }
 
-            CommandGroup(after: .appInfo) {
-                Button("Open Meetings Folder") {
-                    if let url = settings.folder(ConfigKey.destination) {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-                Button("Open Watch Folder") {
-                    if let url = settings.folder(ConfigKey.watch) {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-            }
-
             CommandGroup(replacing: .help) {
+                DiagnosticsCommand()
                 Button("Transcribe on GitHub") {
                     if let url = URL(string: "https://github.com/CalebSargeant/transcribe") {
                         NSWorkspace.shared.open(url)
@@ -105,6 +144,11 @@ struct TranscribeApp: App {
                 }
             }
         }
+
+        Window("Diagnostics", id: "diagnostics") {
+            DiagnosticsView()
+        }
+        .defaultSize(width: 680, height: 560)
 
         MenuBarExtra {
             MenuBarView()
@@ -120,9 +164,24 @@ struct TranscribeApp: App {
             SettingsView()
                 .environment(settings)
                 .environment(appleExport)
+                .environment(reminders)
+                .environment(automation)
                 // Closing the window is the other moment an edit can be
                 // stranded in the debounce.
                 .onDisappear { Task { await settings.flush() } }
         }
+        // Each tab asks for the height it needs; this lets the window be made
+        // taller still rather than fixing it at that.
+        .windowResizability(.contentMinSize)
+    }
+}
+
+/// Help ▸ Run Diagnostics. A view of its own because `openWindow` is only
+/// available from the environment.
+private struct DiagnosticsCommand: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Run Diagnostics…") { openWindow(id: "diagnostics") }
     }
 }

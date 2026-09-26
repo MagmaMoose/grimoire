@@ -63,6 +63,35 @@ struct MeetingFolder: Identifiable, Hashable, Sendable {
         pattern: "^\\d{4}-\\d{2}-\\d{2}[ T](\\d{2}-\\d{2}-\\d{2}|\\d{4})?\\s*"
     )
 
+    /// True when the name is a fallback rather than a title anyone chose:
+    /// "Meeting 1", "Untitled meeting", "New Recording 3", or nothing but a date.
+    /// The pipeline names a folder like that when its notes failed, and the
+    /// command line renames it once they succeed; until then the sidebar shows
+    /// the notes' title instead where there is one.
+    var hasPlaceholderName: Bool {
+        let title = displayName
+        if title == name, Self.datePrefix.firstMatch(
+            in: name, range: NSRange(name.startIndex..., in: name)) != nil
+        {
+            return true
+        }
+        return Self.isPlaceholderTitle(title)
+    }
+
+    /// The same list as `from_transcript.is_placeholder_title` in the CLI.
+    static func isPlaceholderTitle(_ title: String) -> Bool {
+        let text = title.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return true }
+        return placeholder.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static let placeholder = try! NSRegularExpression(
+        pattern:
+            "^(meeting(\\s+\\d+)?|untitled(\\s+meeting)?|new\\s+recording(\\s+\\d+)?"
+            + "|recording(\\s+\\d+)?|voice\\s+memo(\\s.*)?)$",
+        options: [.caseInsensitive]
+    )
+
     private static let teamsSuffix = try! NSRegularExpression(
         pattern: "[-_]\\d{8}_\\d{6}[-_]Meeting Recording$"
     )

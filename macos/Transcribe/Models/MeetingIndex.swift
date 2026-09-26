@@ -17,6 +17,10 @@ struct IndexedMeeting: Codable, Sendable, Identifiable {
     let haystack: String
     let lines: [Line]
     let actions: [Action]
+    /// False for a meeting the pipeline filed without notes, which is what a
+    /// failed or unconfigured notes step leaves behind. Automatic notes look
+    /// for exactly these.
+    var hasNotes: Bool = true
 
     struct Line: Codable, Sendable, Hashable {
         let seconds: Double
@@ -73,7 +77,9 @@ final class MeetingIndex {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appending(path: "com.magmamoose.transcribe")
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base.appending(path: "index-v2.json")
+        // v3 added hasNotes. A v2 cache would decode as a failure and be
+        // rebuilt anyway; the new name just says so.
+        return base.appending(path: "index-v3.json")
     }()
 
     /// Every action item across the library, newest meeting first.
@@ -87,6 +93,11 @@ final class MeetingIndex {
         Array(Set(allActions.compactMap { $0.action.assignedOwner })).sorted {
             $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
         }
+    }
+
+    /// The indexed entry for one folder, once the index has reached it.
+    func entry(for folder: URL) -> IndexedMeeting? {
+        meetings.first { $0.folder == folder }
     }
 
     func search(_ query: String) -> [IndexedMeeting] {
@@ -176,6 +187,9 @@ final class MeetingIndex {
         var lines: [IndexedMeeting.Line] = []
         var actions: [IndexedMeeting.Action] = []
         var extra: [String] = []
+        // A legacy folder has no notes either, but it is not something the
+        // pipeline failed on, so it only counts when notes.json exists.
+        var hasNotes = true
 
         if let url = contents.notesJSON,
             let data = try? Data(contentsOf: url),
@@ -186,6 +200,7 @@ final class MeetingIndex {
                 IndexedMeeting.Line(
                     seconds: $0.start, timestamp: $0.timestamp, speaker: $0.speaker, text: $0.text)
             }
+            hasNotes = record.notes != nil
             if let notes = record.notes {
                 extra.append(notes.summary ?? "")
                 extra.append(contentsOf: notes.sections.map { "\($0.heading) \($0.body)" })
@@ -231,7 +246,8 @@ final class MeetingIndex {
             stamp: stamp,
             haystack: haystack,
             lines: lines,
-            actions: actions
+            actions: actions,
+            hasNotes: hasNotes
         )
     }
 

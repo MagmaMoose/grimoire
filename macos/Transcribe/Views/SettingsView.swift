@@ -5,19 +5,43 @@ import SwiftUI
 /// There is one meetings folder, not an app one and a CLI one: they were always
 /// the same setting, and offering a choice between them only invited them to
 /// disagree.
+///
+/// Each tab is short enough to be seen whole, and the window is sized to it. A
+/// grouped form scrolls inside a window of whatever height it is given, and it
+/// was given too little: settings sat below the fold of every tab with nothing
+/// to say they were there.
 struct SettingsView: View {
     @Environment(Settings.self) private var settings
 
+    static let width: CGFloat = 640
+
     var body: some View {
         TabView {
-            GeneralSettings().tabItem { Label("General", systemImage: "folder") }
-            NotesSettings().tabItem { Label("Summaries", systemImage: "text.alignleft") }
-            TranscriptionSettings().tabItem { Label("Transcription", systemImage: "waveform") }
-            RecordingSettings().tabItem { Label("Recording", systemImage: "record.circle") }
-            SharingSettings().tabItem { Label("Sharing", systemImage: "square.and.arrow.up") }
-            AdvancedSettings().tabItem { Label("Advanced", systemImage: "gearshape.2") }
+            GeneralSettings()
+                .settingsPane(height: 660)
+                .tabItem { Label("General", systemImage: "gearshape") }
+            NotesSettings()
+                .settingsPane(height: 600)
+                .tabItem { Label("Notes", systemImage: "text.alignleft") }
+            MeetingsSettings()
+                .settingsPane(height: 540)
+                .tabItem { Label("Meetings", systemImage: "calendar") }
+            TranscriptionSettings()
+                .settingsPane(height: 440)
+                .tabItem { Label("Transcription", systemImage: "waveform") }
+            SpeakerSettings()
+                .settingsPane(height: 440)
+                .tabItem { Label("Speakers", systemImage: "person.2") }
+            RecordingSettings()
+                .settingsPane(height: 700)
+                .tabItem { Label("Recording", systemImage: "record.circle") }
+            SharingSettings()
+                .settingsPane(height: 580)
+                .tabItem { Label("Sharing", systemImage: "square.and.arrow.up") }
+            AdvancedSettings()
+                .settingsPane(height: 660)
+                .tabItem { Label("Advanced", systemImage: "gearshape.2") }
         }
-        .frame(width: 540)
         .overlay(alignment: .bottom) {
             if let error = settings.lastError {
                 Text(error)
@@ -31,10 +55,21 @@ struct SettingsView: View {
     }
 }
 
+private extension View {
+    /// One tab: a grouped form at a height that fits what is on it. The window
+    /// can still be made taller, and remembers it.
+    func settingsPane(height: CGFloat) -> some View {
+        formStyle(.grouped)
+            .frame(width: SettingsView.width)
+            .frame(minHeight: 360, idealHeight: height, maxHeight: .infinity)
+    }
+}
+
 // MARK: - General
 
 private struct GeneralSettings: View {
     @Environment(Settings.self) private var settings
+    @Environment(Automation.self) private var automation
 
     var body: some View {
         Form {
@@ -51,18 +86,30 @@ private struct GeneralSettings: View {
                 )
             }
 
-            Section("Calendar") {
-                Toggle("Match meetings to calendar events", isOn: settings.flag(ConfigKey.calendar, default: true))
-                    .help("Gives meetings their real title and the list of who was invited.")
-                LabeledContent("Search window") {
-                    Stepper(
-                        "\(settings.config.int(ConfigKey.calendarMargin, default: 15)) min",
-                        value: settings.number(ConfigKey.calendarMargin, default: 15),
-                        in: 0...120,
-                        step: 5
-                    )
+            Section("Without being asked") {
+                Toggle(isOn: settings.flag(ConfigKey.autoProcess, default: true)) {
+                    Text("Process new recordings")
+                    Text("Picked up from the watch folder once they stop growing, then filed with their notes.")
                 }
-                .help("How far either side of a recording to look for an event.")
+                Toggle(isOn: settings.flag(ConfigKey.autoNotes, default: true)) {
+                    Text("Write notes that are missing")
+                    Text("For meetings from the last two weeks that have a transcript but no notes.")
+                }
+                Toggle(isOn: settings.flag(ConfigKey.voiceMemos, default: true)) {
+                    Text("Import new Voice Memos")
+                    Text("Each memo becomes a meeting once, from a copy. Reading Voice Memos needs Full Disk Access.")
+                }
+                LabeledContent("Full Disk Access") {
+                    Button("Open Privacy Settings") { automation.openFullDiskAccessSettings() }
+                }
+                .help("Add Transcribe to the list, so it can read the Voice Memos library")
+            }
+
+            Section("You") {
+                TextField(text: settings.text(ConfigKey.userName), prompt: Text("Your name")) {
+                    Text("Your name")
+                    Text("Finds your own action items, and names your voice in your recordings.")
+                }
             }
 
             Section {
@@ -80,7 +127,6 @@ private struct GeneralSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -97,16 +143,12 @@ private struct FolderRow: View {
                 Spacer()
                 Button("Change…") { choose() }
                     .help("Pick a different \(title.lowercased()) folder")
-                Button {
+                Button("Show in Finder") {
                     if let url = settings.folder(key) {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                     }
-                } label: {
-                    Image(systemName: "arrow.up.forward.app")
                 }
                 .disabled(settings.folder(key) == nil)
-                .accessibilityLabel("Open \(title.lowercased()) folder in Finder")
-                .help("Open this folder in Finder")
             }
             Text(settings.folder(key)?.path(percentEncoded: false) ?? "Not set")
                 .font(.callout)
@@ -157,7 +199,7 @@ private struct NotesSettings: View {
     var body: some View {
         Form {
             Section("Provider") {
-                Picker("Generate notes with", selection: settings.text(ConfigKey.provider, default: "claude")) {
+                Picker("Write notes with", selection: settings.text(ConfigKey.provider, default: "claude")) {
                     Text("Claude").tag("claude")
                     Text("OpenAI compatible").tag("openai")
                 }
@@ -170,7 +212,7 @@ private struct NotesSettings: View {
                     Label {
                         Text(
                             "No API key for \(provider == "claude" ? "Claude" : "the OpenAI provider"). "
-                                + "Notes, categories and speaker naming will all be skipped."
+                                + "Notes, titles, categories and speaker naming will all be skipped."
                                 + (otherProviderHasKey
                                     ? " The other provider does have one."
                                     : "")
@@ -192,16 +234,35 @@ private struct NotesSettings: View {
                 Section("OpenAI compatible") {
                     SecureField("API key", text: settings.text(ConfigKey.openAIKey), prompt: Text("sk-…"))
                     TextField("Model", text: settings.text(ConfigKey.openAIModel, default: "gpt-4o-mini"))
-                    TextField(
-                        "Base URL",
-                        text: settings.text(ConfigKey.openAIBaseURL),
-                        prompt: Text("empty for api.openai.com")
-                    )
-                    Text("Point at a LiteLLM gateway, Ollama, vLLM or OpenRouter.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    TextField(text: settings.text(ConfigKey.openAIBaseURL), prompt: Text("empty for api.openai.com")) {
+                        Text("Base URL")
+                        Text("Point at a LiteLLM gateway, Ollama, vLLM or OpenRouter.")
+                    }
                 }
             }
 
+            Section("Categories and grouping") {
+                Toggle(isOn: settings.flag(ConfigKey.autoCategorise, default: true)) {
+                    Text("Categorise meetings as they are filed")
+                    Text("One short extra request per meeting, so the library can be grouped without a separate pass.")
+                }
+                TokenList(
+                    key: ConfigKey.groupFields,
+                    prompt: "Company",
+                    help: "Your own ways to group meetings, such as Company or Project. Each meeting gets one value, filled in when it is categorised and editable above its notes."
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Meetings
+
+private struct MeetingsSettings: View {
+    @Environment(Settings.self) private var settings
+
+    var body: some View {
+        Form {
             Section("Splitting") {
                 Toggle("Split a recording into separate meetings", isOn: settings.flag(ConfigKey.splitMeetings, default: true))
                 Toggle("Also cut the video into one clip per meeting", isOn: settings.flag(ConfigKey.splitVideo, default: true))
@@ -221,8 +282,54 @@ private struct NotesSettings: View {
                     )
                 }
             }
+
+            Section("Calendar") {
+                Toggle(isOn: settings.flag(ConfigKey.calendar, default: true)) {
+                    Text("Match meetings to calendar events")
+                    Text("Gives meetings their real title and the list of who was invited.")
+                }
+                LabeledContent("Search window") {
+                    Stepper(
+                        "\(settings.config.int(ConfigKey.calendarMargin, default: 15)) min",
+                        value: settings.number(ConfigKey.calendarMargin, default: 15),
+                        in: 0...120,
+                        step: 5
+                    )
+                }
+                .help("How far either side of a recording to look for an event.")
+                CalendarAccessRow()
+            }
+
+            Section("Source files") {
+                Toggle(isOn: settings.flag(ConfigKey.moveSource, default: true)) {
+                    Text("Move the recording into the meeting folder")
+                    Text("Off leaves the original where it was recorded and copies nothing.")
+                }
+            }
         }
-        .formStyle(.grouped)
+    }
+}
+
+/// Whether the calendar can be read, and the button that asks.
+private struct CalendarAccessRow: View {
+    @State private var granted = Presence.calendarAuthorised
+
+    var body: some View {
+        LabeledContent {
+            if granted {
+                Text("Allowed").foregroundStyle(.secondary)
+            } else {
+                Button("Allow…") {
+                    Task {
+                        NSApp.activate(ignoringOtherApps: true)
+                        granted = await Presence.requestCalendarAccess()
+                    }
+                }
+            }
+        } label: {
+            Text("Calendar access")
+            Text("Also what lets a calendar event start a recording with the camera off.")
+        }
     }
 }
 
@@ -250,24 +357,39 @@ private struct TranscriptionSettings: View {
                     )
                 }
 
-                Toggle("Voice activity detection", isOn: settings.flag(ConfigKey.whisperVAD, default: true))
-                Text("Leave on. Without it Whisper invents filler over room tone and can lock into a repetition loop.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Toggle(isOn: settings.flag(ConfigKey.whisperVAD, default: true)) {
+                    Text("Voice activity detection")
+                    Text("Leave on. Without it Whisper invents filler over room tone and can lock into a repetition loop.")
+                }
 
-                Toggle(
-                    "Learn vocabulary from past meetings",
-                    isOn: settings.flag(ConfigKey.whisperAutoPrompt, default: true)
-                )
-                .help("Read by the vocabulary learning in the transcription pipeline.")
-                Text(
-                    "Builds the decoder prompt from your calendar, past notes and corrections, "
-                        + "instead of a hand-kept list. Requires a pipeline version that supports "
-                        + "it; older ones ignore this and use the prompt above."
-                )
-                .font(.caption).foregroundStyle(.secondary)
+                Toggle(isOn: settings.flag(ConfigKey.whisperAutoPrompt, default: true)) {
+                    Text("Learn vocabulary from past meetings")
+                    Text("Builds the decoder prompt from your calendar, past notes and corrections, instead of a hand-kept list.")
+                }
             }
 
-            Section("Speakers") {
+            Section("Vocabulary") {
+                TextField(
+                    text: settings.text(ConfigKey.whisperPrompt),
+                    prompt: Text("Terraform, Kubernetes, MikroTik, BGP")
+                ) {
+                    Text("Always prime Whisper with")
+                    Text("Capped at 224 tokens, so the learned terms are dropped first if this is long.")
+                }
+                .help("Terms added to every transcription on top of what is learned automatically.")
+            }
+        }
+    }
+}
+
+// MARK: - Speakers
+
+private struct SpeakerSettings: View {
+    @Environment(Settings.self) private var settings
+
+    var body: some View {
+        Form {
+            Section("Separating voices") {
                 Toggle("Separate speakers", isOn: settings.flag(ConfigKey.diarization, default: true))
                 LabeledContent("Threads") {
                     Stepper(
@@ -292,22 +414,11 @@ private struct TranscriptionSettings: View {
                 .disabled(!settings.config.bool(ConfigKey.diarization, default: true))
                 Text(
                     String(
-                        format: "%.2f — higher merges more voices together. Below about 0.8 a long meeting splits one person into several.",
+                        format: "%.2f. Higher merges more voices together. Below about 0.8 a long meeting splits one person into several.",
                         settings.config.double(ConfigKey.diarizationThreshold, default: 0.8)
                     )
                 )
                 .font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section("Vocabulary") {
-                TextField(
-                    "Always prime Whisper with",
-                    text: settings.text(ConfigKey.whisperPrompt),
-                    prompt: Text("Terraform, Kubernetes, MikroTik, BGP")
-                )
-                .help("Terms added to every transcription on top of what is learned automatically.")
-                Text("Improves proper nouns and jargon. Capped at 224 tokens, so the learned terms are dropped first if this is long.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("People") {
@@ -317,14 +428,7 @@ private struct TranscriptionSettings: View {
                     help: "Names that recur in your meetings. Used to put names to voices when no calendar attendee list is available."
                 )
             }
-
-            Section("Source files") {
-                Toggle("Move the recording into the meeting folder", isOn: settings.flag(ConfigKey.moveSource, default: true))
-                Text("Off leaves the original where it was recorded and copies nothing.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -332,15 +436,37 @@ private struct TranscriptionSettings: View {
 
 private struct RecordingSettings: View {
     @Environment(Settings.self) private var settings
+    @State private var testing = false
+    @State private var testResult: String?
+
+    private var automatic: Bool { settings.config.bool(ConfigKey.autoRecord, default: true) }
 
     var body: some View {
         Form {
             Section("When to record") {
-                Toggle("Require the camera to be on", isOn: settings.flag(ConfigKey.requireCamera, default: true))
-                Toggle("Accept a calendar event as the signal", isOn: settings.flag(ConfigKey.useCalendar, default: true))
-                Toggle("Microphone alone is enough", isOn: settings.flag(ConfigKey.micOnly, default: false))
-                Text("The microphone alone also fires on dictation, voice notes and Siri, which is why it needs a second signal by default.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Toggle(isOn: settings.flag(ConfigKey.autoRecord, default: true)) {
+                    Text("Record meetings automatically")
+                    Text("Starts OBS when a meeting begins and stops it when it ends. Record Now in the menu bar works either way.")
+                }
+                // Labelled for what it does. It read "Require the camera to be
+                // on", but switching it on never required anything: it lets the
+                // camera count as the second signal.
+                Toggle(isOn: settings.flag(ConfigKey.requireCamera, default: true)) {
+                    Text("The camera being on counts as a meeting")
+                    Text("Almost nothing but a video call turns it on.")
+                }
+                .disabled(!automatic)
+                Toggle(isOn: settings.flag(ConfigKey.useCalendar, default: true)) {
+                    Text("A calendar event happening now counts")
+                    Text("Catches meetings joined with the camera off. Needs calendar access.")
+                }
+                .disabled(!automatic)
+                Toggle(isOn: settings.flag(ConfigKey.micOnly, default: false)) {
+                    Text("The microphone alone is enough")
+                    Text("Also fires on dictation, voice notes and Siri, which is why a second signal is needed by default.")
+                }
+                .disabled(!automatic)
+                CalendarAccessRow()
             }
 
             Section("Timing") {
@@ -382,11 +508,36 @@ private struct RecordingSettings: View {
                     .frame(width: 90)
                 }
                 SecureField("Password", text: settings.text(ConfigKey.obsPassword))
-                Text("Enable OBS ▸ Tools ▸ WebSocket Server Settings first.")
-                    .font(.caption).foregroundStyle(.secondary)
+                LabeledContent {
+                    HStack {
+                        if testing { ProgressView().controlSize(.small) }
+                        Button("Test Connection") { test() }.disabled(testing)
+                    }
+                } label: {
+                    Text("Recordings are saved to the watch folder")
+                    Text(testResult ?? "Enable OBS ▸ Tools ▸ WebSocket Server Settings first.")
+                }
             }
         }
-        .formStyle(.grouped)
+    }
+
+    private func test() {
+        testing = true
+        testResult = nil
+        let connection = OBS.Connection(
+            host: settings.config.string(ConfigKey.obsHost, default: "localhost"),
+            port: settings.config.int(ConfigKey.obsPort, default: 4455),
+            password: settings.config.string(ConfigKey.obsPassword)
+        )
+        Task {
+            do {
+                _ = try await OBS.test(connection: connection)
+                testResult = "Connected. OBS is ready to record."
+            } catch {
+                testResult = error.localizedDescription
+            }
+            testing = false
+        }
     }
 }
 
@@ -395,46 +546,58 @@ private struct RecordingSettings: View {
         .environment(Settings(config: Configuration(values: [:])))
 }
 
-
 // MARK: - Sharing
 
 private struct SharingSettings: View {
     @Environment(Settings.self) private var settings
     @Environment(AppleExport.self) private var export
+    @Environment(Automation.self) private var automation
 
     var body: some View {
         Form {
-            Section("Apple Notes") {
-                TextField(
-                    "Folder",
-                    text: settings.text(ConfigKey.notesFolder, default: "Meetings"),
-                    prompt: Text("Meetings")
-                )
-                .help("Created in Notes the first time a meeting is sent there.")
-                Text(
-                    "Notes has no API, so meetings are filed by asking the Notes app to do it. "
-                        + "macOS will ask for permission the first time."
-                )
-                .font(.caption).foregroundStyle(.secondary)
-            }
-
             Section("Reminders") {
                 if export.remindersAuthorised {
-                    Picker("Add action items to", selection: settings.text(ConfigKey.remindersList)) {
-                        Text("Default list").tag("")
+                    Toggle(isOn: settings.flag(ConfigKey.remindersSync, default: false)) {
+                        Text("Keep action items in Reminders")
+                        Text("Action items from the last 30 days are added once, and a tick in either app ticks off both.")
+                    }
+                    Picker("List", selection: settings.text(ConfigKey.remindersList)) {
+                        Text("“\(RemindersSync.defaultListName)”, created for you").tag("")
                         ForEach(export.reminderLists, id: \.id) { list in
                             Text(list.title).tag(list.id)
                         }
                     }
-                    .help("Which Reminders list a meeting's action items go into.")
-                } else {
-                    LabeledContent("Access") {
-                        Button("Allow Reminders…") {
-                            Task { await export.requestRemindersAccess() }
-                        }
+                    .help("Which Reminders list action items go into.")
+                    Picker(selection: settings.text(ConfigKey.remindersScope, default: "mine")) {
+                        Text("Mine and unassigned").tag("mine")
+                        Text("Everyone's").tag("all")
+                    } label: {
+                        Text("Which action items")
+                        Text(
+                            settings.userName.isEmpty
+                                ? "Set your name under General, or Mine cannot tell which are yours."
+                                : "Mine means owned by \(settings.userName), or by nobody yet."
+                        )
                     }
-                    Text("Action items become reminders, each linking back to its meeting.")
-                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    LabeledContent {
+                        Button("Connect Reminders…") {
+                            Task { await automation.connectReminders() }
+                        }
+                    } label: {
+                        Text("Keep action items in Reminders")
+                        Text("Each becomes a reminder, linking back to its meeting. macOS asks for permission first.")
+                    }
+                }
+            }
+
+            Section("Apple Notes") {
+                TextField(
+                    text: settings.text(ConfigKey.notesFolder, default: "Meetings"),
+                    prompt: Text("Meetings")
+                ) {
+                    Text("Folder")
+                    Text("Created in Notes the first time a meeting is sent there. macOS asks for permission first.")
                 }
             }
 
@@ -460,13 +623,10 @@ private struct SharingSettings: View {
                 Text("A bot token and channel are used in preference to the webhook. Leave all three empty to skip Slack.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-
         }
-        .formStyle(.grouped)
         .task { await export.loadReminderLists() }
     }
 }
-
 
 // MARK: - Advanced
 
@@ -478,6 +638,7 @@ private struct SharingSettings: View {
 /// pipeline shows up somewhere instead of silently becoming unreachable.
 private struct AdvancedSettings: View {
     @Environment(Settings.self) private var settings
+    @Environment(\.openWindow) private var openWindow
 
     /// Anything in the file the app has no dedicated control for.
     private var uncovered: [String] {
@@ -489,8 +650,10 @@ private struct AdvancedSettings: View {
     var body: some View {
         Form {
             Section("Pipeline") {
-                Toggle("Split recordings into meetings", isOn: settings.flag(ConfigKey.meetingMode, default: true))
-                    .help("Off writes one flat set of notes per recording.")
+                Toggle(isOn: settings.flag(ConfigKey.meetingMode, default: true)) {
+                    Text("Meeting-aware pipeline")
+                    Text("Off writes one flat transcript and summary per recording, as the first version did.")
+                }
                 Picker("Calendar source", selection: settings.text(ConfigKey.calendarSource, default: "macos")) {
                     Text("macOS Calendar").tag("macos")
                 }
@@ -500,6 +663,10 @@ private struct AdvancedSettings: View {
                         "\(settings.config.int(ConfigKey.pollSeconds, default: 5))s",
                         value: settings.number(ConfigKey.pollSeconds, default: 5), in: 1...60)
                 }
+                LabeledContent("Diagnostics") {
+                    Button("Run Diagnostics…") { openWindow(id: "diagnostics") }
+                }
+                .help("Runs transcribe doctor and transcribe mic, and shows what they found")
             }
 
             Section("Model output budgets") {
@@ -571,7 +738,6 @@ private struct AdvancedSettings: View {
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
     @ViewBuilder

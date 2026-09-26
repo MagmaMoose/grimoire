@@ -7,6 +7,12 @@ import SwiftUI
 /// diarization and the LLM calls all live in the Python, and this shells out to
 /// exactly the command a user would type, so there is one implementation and
 /// one set of settings behind both.
+///
+/// Runs are queued, one at a time. The app now starts work on its own (new
+/// recordings, missing notes, Voice Memos), and a second run started over the
+/// first used to kill it: a click on Generate Notes during an hour-long
+/// transcription threw the transcription away. A click now goes to the front of
+/// the queue instead.
 @MainActor
 @Observable
 final class Pipeline {
@@ -17,11 +23,72 @@ final class Pipeline {
         case failed(String)
     }
 
+    /// One run of the command line tool.
+    struct Job: Identifiable, Equatable {
+        enum Kind: Equatable {
+            case process(URL)
+            case reprocess(URL)
+            case notes(URL)
+            case categorise([URL])
+            case voiceMemos
+            case tidy
+        }
+
+        let id = UUID()
+        let kind: Kind
+        let arguments: [String]
+        let label: String
+        /// The meeting folder this run writes into, so the view showing it
+        /// knows to reload.
+        let target: URL?
+        /// Started by the app rather than by a click.
+        let automatic: Bool
+
+        static func == (lhs: Job, rhs: Job) -> Bool { lhs.id == rhs.id }
+
+        /// The recording this run processes, if it processes one.
+        var source: URL? {
+            switch kind {
+            case .process(let url), .reprocess(let url): url
+            default: nil
+            }
+        }
+    }
+
+    enum Outcome: Equatable {
+        case succeeded
+        case failed
+        case cancelled
+        /// Another `transcribe` process already had the file (exit 75).
+        case busyElsewhere
+        /// The CLI needs a permission the app has to ask for (exit 77).
+        case needsPermission
+    }
+
+    /// A finished run. Published as a value with a token, not through `state`:
+    /// when one run ends and the next starts in the same turn, `state` goes
+    /// from running to running and the finish in between is never observed.
+    struct Completion: Equatable {
+        let token: Int
+        let job: Job
+        let outcome: Outcome
+        let output: String
+        /// Folders the run renamed, old path to new.
+        let renamed: [URL: URL]
+
+        static func == (lhs: Completion, rhs: Completion) -> Bool { lhs.token == rhs.token }
+    }
+
     private(set) var state: State = .idle
     private(set) var output: String = ""
-    /// The meeting folder the current run is about, so a detail view can tell
-    /// whether a finished run concerns it.
-    private(set) var lastTarget: URL?
+    private(set) var current: Job?
+    private(set) var queued: [Job] = []
+    private(set) var lastCompletion: Completion?
+    private var completions = 0
+
+    /// Told about every finished run, for the work that has to follow one
+    /// whether or not a window is open.
+    var onCompletion: ((Completion) -> Void)?
 
     /// Recording failures, kept apart from `state` so they cannot overwrite a
     /// transcription that is still running.
@@ -29,6 +96,8 @@ final class Pipeline {
     private(set) var recordOutput: String = ""
 
     func clearRecordError() { recordError = nil; recordOutput = "" }
+    func setRecordError(_ message: String?) { recordError = message }
+
     private var task: Task<Void, Never>?
 
     /// Holds the running child so cancelling can actually kill it.
@@ -70,28 +139,39 @@ final class Pipeline {
             .map { URL(filePath: $0) }
     }
 
-    var isRunning: Bool { if case .running = state { return true } else { return false } }
+    var isRunning: Bool { current != nil }
 
-    /// Stop the running command.
+    /// True when a run concerning this kind of work is running or waiting.
+    func has(_ kind: Job.Kind) -> Bool {
+        current?.kind == kind || queued.contains { $0.kind == kind }
+    }
+
+    /// The run for this recording, running or waiting, if there is one.
+    func job(for source: URL) -> Job? {
+        if current?.source == source { return current }
+        return queued.first { $0.source == source }
+    }
+
+    func isQueued(_ job: Job) -> Bool { queued.contains(job) }
+
+    /// Stop the running command. The next queued run then starts.
     ///
     /// Cancelling the Swift task is not enough: the `Process` runs whisper and
-    /// LLM calls for minutes and knows nothing about task cancellation, so it
-    /// carried on while the buttons re-enabled and a second run could be
-    /// started over the same folder. The child is signalled too.
+    /// LLM calls for minutes and knows nothing about task cancellation. The
+    /// child is signalled, and the run reports itself cancelled when it exits.
     func cancel() {
-        if isRunning { wasCancelled = true }
+        guard current != nil else { return }
+        wasCancelled = true
         box.terminate()
-        task?.cancel()
-        task = nil
-        state = .idle
     }
+
+    /// Drop everything waiting. What is running carries on.
+    func clearQueue() { queued.removeAll() }
+
+    // MARK: - Work
 
     /// Reprocess one meeting folder's recording, which regenerates its notes.
     func regenerate(folder: MeetingFolder, media: URL?, label: String) {
-        guard let tool = Self.locate() else {
-            state = .failed(missingToolMessage)
-            return
-        }
         guard let media else {
             state = .failed("This meeting has no recording to reprocess.")
             return
@@ -99,12 +179,12 @@ final class Pipeline {
         // --keep-source, or the run moves this meeting's own recording out of
         // the folder being reprocessed and into whichever new folder it
         // produces, leaving a duplicate meeting and a folder with no media.
-        run(
-            tool: tool,
-            arguments: [media.path(percentEncoded: false), "--keep-source"],
-            label: label,
-            target: folder.id
-        )
+        enqueue(
+            Job(
+                kind: .reprocess(media),
+                arguments: [media.path(percentEncoded: false), "--keep-source"],
+                label: label, target: folder.id, automatic: false),
+            first: true)
     }
 
     /// Write notes from the transcript a folder already has.
@@ -112,31 +192,28 @@ final class Pipeline {
     /// The cheap path, and the right default. Re-transcribing an hour of audio
     /// to produce notes from words the folder already contains is wasteful, and
     /// for older meetings the audio may not even be there any more.
-    func notesFromTranscript(folder: URL) {
-        guard let tool = Self.locate() else {
-            state = .failed(missingToolMessage)
-            return
-        }
-        run(
-            tool: tool,
-            arguments: ["notes", folder.path(percentEncoded: false)],
-            label: "Writing notes from the transcript",
-            target: folder
-        )
+    func notesFromTranscript(folder: URL, automatic: Bool = false) {
+        enqueue(
+            Job(
+                kind: .notes(folder),
+                arguments: ["notes", folder.path(percentEncoded: false)],
+                label: automatic
+                    ? "Writing notes for \(folder.lastPathComponent)"
+                    : "Writing notes from the transcript",
+                target: folder, automatic: automatic),
+            first: !automatic)
     }
 
     /// Process one recording from the watch folder.
-    func process(_ url: URL) {
-        guard let tool = Self.locate() else {
-            state = .failed(missingToolMessage)
-            return
-        }
+    func process(_ url: URL, automatic: Bool = false) {
         // A watch-folder recording is meant to be filed, so the source moves.
-        run(
-            tool: tool,
-            arguments: [url.path(percentEncoded: false)],
-            label: "Processing \(url.lastPathComponent)"
-        )
+        enqueue(
+            Job(
+                kind: .process(url),
+                arguments: [url.path(percentEncoded: false)],
+                label: "Processing \(url.lastPathComponent)",
+                target: nil, automatic: automatic),
+            first: !automatic)
     }
 
     /// Ask the CLI to categorise meetings using the configured LLM.
@@ -145,32 +222,138 @@ final class Pipeline {
     /// re-implementing an LLM client here would be a second thing to configure
     /// and a second thing to get wrong.
     func categorise(folders: [URL], overwrite: Bool = false) {
-        guard let tool = Self.locate() else {
-            state = .failed(missingToolMessage)
-            return
-        }
         guard !folders.isEmpty else { return }
         var arguments = ["categorise"] + folders.map { $0.path(percentEncoded: false) }
         if overwrite { arguments.append("--overwrite") }
-        run(
-            tool: tool,
-            arguments: arguments,
-            label: folders.count == 1
-                ? "Categorising 1 meeting" : "Categorising \(folders.count) meetings",
-            target: folders.count == 1 ? folders[0] : nil
-        )
+        enqueue(
+            Job(
+                kind: .categorise(folders),
+                arguments: arguments,
+                label: folders.count == 1
+                    ? "Categorising 1 meeting" : "Categorising \(folders.count) meetings",
+                target: folders.count == 1 ? folders[0] : nil, automatic: false),
+            first: true)
     }
+
+    /// Import Voice Memos recorded in the last few days that have not been
+    /// imported yet. The CLI keeps the record of which have.
+    func importVoiceMemos(lookbackDays: Int, automatic: Bool = false) {
+        enqueue(
+            Job(
+                kind: .voiceMemos,
+                arguments: ["voicememos", "--import", "--since-days=\(max(lookbackDays, 1))"],
+                label: "Importing new Voice Memos",
+                target: nil, automatic: automatic),
+            first: !automatic)
+    }
+
+    /// File recordings that were processed but left in the watch folder.
+    func tidy() {
+        enqueue(
+            Job(
+                kind: .tidy, arguments: ["tidy"],
+                label: "Moving processed recordings out of the watch folder",
+                target: nil, automatic: false),
+            first: true)
+    }
+
+    /// Queue a run, unless the same work is already running or waiting.
+    func enqueue(_ job: Job, first: Bool = false) {
+        guard !has(job.kind) else { return }
+        if first { queued.insert(job, at: 0) } else { queued.append(job) }
+        startNext()
+    }
+
+    private func startNext() {
+        guard current == nil, !queued.isEmpty else { return }
+        let job = queued.removeFirst()
+        current = job
+        wasCancelled = false
+        state = .running(job.label)
+        output = ""
+
+        guard let tool = Self.locate() else {
+            // Every queued run would fail the same way, so they go too.
+            queued.removeAll()
+            complete(job, status: 127, signalled: false, output: missingToolMessage)
+            state = .failed(missingToolMessage)
+            return
+        }
+
+        let box = ProcessBox()
+        self.box = box
+        task = Task { [weak self] in
+            let result = await Self.execute(tool: tool, arguments: job.arguments, box: box)
+            box.release()
+            self?.complete(
+                job, status: result.status, signalled: result.signalled, output: result.output)
+        }
+    }
+
+    private func complete(_ job: Job, status: Int32, signalled: Bool, output: String) {
+        guard current?.id == job.id else { return }
+        self.output = output
+
+        let outcome: Outcome
+        if signalled {
+            outcome = wasCancelled ? .cancelled : .failed
+            // Anything signalled while we were not cancelling was killed from
+            // outside, which is worth saying rather than calling it a generic
+            // failure.
+            state = wasCancelled ? .idle : .failed("\(job.label) was stopped (signal \(status)).")
+        } else {
+            switch status {
+            case 0:
+                outcome = .succeeded
+                state = .finished(job.label)
+            case 75:
+                outcome = .busyElsewhere
+                state = .finished("Another transcribe process is already on it")
+            case 77:
+                outcome = .needsPermission
+                state = .failed("\(job.label) needs a permission macOS has not granted.")
+            default:
+                outcome = .failed
+                state = .failed("\(job.label) failed (exit \(status)). See the log below.")
+            }
+        }
+
+        completions += 1
+        let completion = Completion(
+            token: completions, job: job, outcome: outcome, output: output,
+            renamed: Self.renames(in: output, target: job.target))
+        lastCompletion = completion
+        current = nil
+        task = nil
+        wasCancelled = false
+        onCompletion?(completion)
+        startNext()
+    }
+
+    /// The folder a notes run renamed, from the line the CLI prints for it.
+    nonisolated static func renames(in output: String, target: URL?) -> [URL: URL] {
+        guard let target else { return [:] }
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard let range = line.range(of: renamedMarker) else { continue }
+            let path = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            if !path.isEmpty { return [target: URL(filePath: path)] }
+        }
+        return [:]
+    }
+
+    /// `from_transcript.RENAMED_PREFIX` in the CLI. The two must match.
+    nonisolated static let renamedMarker = "Renamed folder to: "
 
     /// Start or stop an OBS recording via the CLI, which already speaks
     /// obs-websocket.
     ///
     /// Awaited and returning success, so the caller does not claim a recording
-    /// started when OBS refused. This deliberately does not go through `run`:
-    /// it must not clobber the state of a long transcription that is running.
+    /// started when OBS refused. This deliberately does not go through the
+    /// queue: it must not wait behind a long transcription.
     @discardableResult
     func controlRecording(start: Bool) async -> Bool {
         guard let tool = Self.locate() else {
-            state = .failed(missingToolMessage)
+            recordError = missingToolMessage
             return false
         }
         let result = await Self.execute(
@@ -178,10 +361,7 @@ final class Pipeline {
             arguments: ["record", start ? "start" : "stop"],
             box: ProcessBox()
         )
-        if result.status != 0 {
-            // Reported separately, not through `state`: a transcription can be
-            // running, and overwriting its state hides the Cancel button and
-            // re-enables the controls that would kill it.
+        if result.status != 0 || result.signalled {
             recordError =
                 (start ? "Could not start recording" : "Could not stop recording")
                 + " (exit \(result.status))."
@@ -190,45 +370,12 @@ final class Pipeline {
             recordError = nil
             recordOutput = ""
         }
-        return result.status == 0
+        return result.status == 0 && !result.signalled
     }
 
     private var missingToolMessage: String {
         "The transcribe command line tool was not found. Install it with "
             + "'brew install calebsargeant/tap/transcribe'."
-    }
-
-    private func run(tool: URL, arguments: [String], label: String, target: URL? = nil) {
-        cancel()
-        lastTarget = target
-        state = .running(label)
-        output = ""
-
-        let box = ProcessBox()
-        self.box = box
-        task = Task { [weak self] in
-            let result = await Self.execute(tool: tool, arguments: arguments, box: box)
-            box.release()
-            guard let self, !Task.isCancelled else { return }
-            self.output = result.output
-            switch result.status {
-            case 0:
-                self.state = .finished(label)
-            case let status where status < 0:
-                // Process reports a signal as a negative status. Anything
-                // signalled while we were not cancelling was killed from
-                // outside, which is worth saying rather than calling it a
-                // generic failure.
-                self.state =
-                    self.wasCancelled
-                    ? .idle
-                    : .failed("\(label) was stopped (signal \(-status)).")
-            default:
-                self.state = .failed(
-                    "\(label) failed (exit \(result.status)). See the log below.")
-            }
-            self.wasCancelled = false
-        }
     }
 
     /// Runs the tool and collects its output.
@@ -238,7 +385,7 @@ final class Pipeline {
     /// deadlock rather than a slow run.
     private nonisolated static func execute(
         tool: URL, arguments: [String], box: ProcessBox
-    ) async -> (status: Int32, output: String) {
+    ) async -> (status: Int32, signalled: Bool, output: String) {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
@@ -259,7 +406,8 @@ final class Pipeline {
                 do {
                     try process.run()
                 } catch {
-                    continuation.resume(returning: (-1, "Could not start: \(error.localizedDescription)"))
+                    continuation.resume(
+                        returning: (-1, false, "Could not start: \(error.localizedDescription)"))
                     return
                 }
 
@@ -268,6 +416,9 @@ final class Pipeline {
                 continuation.resume(
                     returning: (
                         process.terminationStatus,
+                        // A signal is reported as its number, which reads like
+                        // an exit status unless the reason is checked.
+                        process.terminationReason == .uncaughtSignal,
                         String(data: data, encoding: .utf8) ?? ""
                     )
                 )

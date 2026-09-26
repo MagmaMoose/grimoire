@@ -2,7 +2,8 @@ import EventKit
 import Foundation
 import SwiftUI
 
-/// Sends meetings to Reminders and Notes.
+/// Sends meetings to Notes, and holds the Reminders access that `RemindersSync`
+/// uses to keep action items there.
 ///
 /// Two very different mechanisms, because Apple provides for one and not the
 /// other. Reminders has EventKit, a real API with a real permission. Notes has
@@ -19,7 +20,9 @@ final class AppleExport {
     }
 
     private(set) var status: Status = .idle
-    private let store = EKEventStore()
+    /// Shared with `RemindersSync`. Apple asks for one store per app: each one
+    /// is expensive to create and keeps its own cache of the database.
+    let store = EKEventStore()
 
     /// Reminder lists to choose from, once access has been granted.
     private(set) var reminderLists: [(id: String, title: String)] = []
@@ -34,9 +37,15 @@ final class AppleExport {
     /// and the old one now returns denied on newer systems even when the user
     /// would have said yes.
     func requestRemindersAccess() async -> Bool {
+        if remindersAuthorised { return true }
         do {
             let granted = try await store.requestFullAccessToReminders()
-            if granted { await loadReminderLists() }
+            if granted {
+                // A store made before access was granted can go on reporting
+                // no lists at all until it is told to look again.
+                store.reset()
+                await loadReminderLists()
+            }
             return granted
         } catch {
             status = .failed("Reminders access failed: \(error.localizedDescription)")
@@ -53,95 +62,6 @@ final class AppleExport {
         reminderLists = store.calendars(for: .reminder)
             .map { (id: $0.calendarIdentifier, title: $0.title) }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-    }
-
-    /// Create one reminder per action item.
-    ///
-    /// Each carries the meeting title and a link back to its folder, because a
-    /// reminder that just says "Update the docs" three weeks later is useless.
-    @discardableResult
-    func sendToReminders(
-        actions: [IndexedMeeting.Action],
-        meetingTitle: String,
-        meetingFolder: URL,
-        meetingDate: Date?,
-        listID: String?,
-        dueDate: Date?
-    ) async -> Int {
-        guard !actions.isEmpty else {
-            status = .failed("This meeting has no action items.")
-            return 0
-        }
-        // Cannot be folded into one `||`: await is not allowed on the right of
-        // a short-circuiting operator.
-        if !remindersAuthorised {
-            guard await requestRemindersAccess() else {
-                status = .failed(
-                    "Reminders access was refused. Grant it in System Settings > "
-                        + "Privacy & Security > Reminders."
-                )
-                return 0
-            }
-        }
-
-        status = .working("Adding \(actions.count) reminder(s)")
-
-        let list =
-            listID.flatMap { store.calendar(withIdentifier: $0) }
-            ?? store.defaultCalendarForNewReminders()
-        guard let list else {
-            status = .failed("No Reminders list available to add to.")
-            return 0
-        }
-
-        var added = 0
-        for action in actions {
-            let reminder = EKReminder(eventStore: store)
-            reminder.calendar = list
-            reminder.title = action.assignedOwner.map { "\(action.title) (\($0))" } ?? action.title
-
-            var body = action.detail.isEmpty ? "" : action.detail + "\n\n"
-            body += "From: \(meetingTitle)"
-            if let meetingDate {
-                body += " · \(meetingDate.formatted(date: .abbreviated, time: .shortened))"
-            }
-            body += "\n\(meetingFolder.path(percentEncoded: false))"
-            reminder.notes = body
-
-            if let dueDate {
-                reminder.dueDateComponents = Calendar.current.dateComponents(
-                    [.year, .month, .day], from: dueDate)
-            }
-
-            do {
-                try store.save(reminder, commit: false)
-                added += 1
-            } catch {
-                status = .failed("Could not add a reminder: \(error.localizedDescription)")
-                return added
-            }
-        }
-
-        // One commit for the batch; committing per reminder is markedly slower
-        // and can leave half a meeting's actions behind on failure. Off the
-        // main actor because a commit talks to the Reminders store, which can
-        // take long enough to drop frames.
-        let eventStore = store
-        let failure = await MeetingLibrary.offMainActor { () -> String? in
-            do {
-                try eventStore.commit()
-                return nil
-            } catch {
-                return error.localizedDescription
-            }
-        }
-        if let failure {
-            status = .failed("Could not save the reminders: \(failure)")
-            return 0
-        }
-
-        status = .done("Added \(added) reminder(s) to \(list.title)")
-        return added
     }
 
     // MARK: - Notes

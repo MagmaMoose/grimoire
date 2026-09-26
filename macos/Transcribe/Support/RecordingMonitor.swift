@@ -3,10 +3,9 @@ import SwiftUI
 /// Watches for a meeting and drives recording.
 ///
 /// Detection is native, so the microphone and camera checks are attributed to
-/// this app rather than to whichever terminal launched the CLI. Starting and
-/// stopping OBS is still the CLI's job: it already speaks obs-websocket, and a
-/// second implementation of that in Swift would be one more thing to keep in
-/// step for no gain.
+/// this app rather than to whichever terminal launched the CLI. OBS is driven
+/// natively too (see `OBS`): the Homebrew CLI cannot, because it does not
+/// bundle the websocket client, and that is where every automatic start went.
 @MainActor
 @Observable
 final class RecordingMonitor {
@@ -15,6 +14,8 @@ final class RecordingMonitor {
         case detected
         case recording
         case paused
+        /// A meeting is happening and the user said not to record it.
+        case skipped
 
         var symbol: String {
             switch self {
@@ -22,6 +23,7 @@ final class RecordingMonitor {
             case .detected: "circle"
             case .recording: "record.circle.fill"
             case .paused: "pause.circle"
+            case .skipped: "circle.slash"
             }
         }
 
@@ -31,6 +33,7 @@ final class RecordingMonitor {
             case .detected: "Meeting detected"
             case .recording: "Recording"
             case .paused: "Auto-record paused"
+            case .skipped: "Not recording this meeting"
             }
         }
     }
@@ -40,6 +43,20 @@ final class RecordingMonitor {
     private(set) var detectedSince: Date?
     private(set) var quietSince: Date?
     private(set) var lastError: String?
+    /// Where OBS saved the last recording, when it said.
+    private(set) var lastRecordingPath: String?
+
+    /// Set by `control` when it can say more than "it failed".
+    var controlError: String?
+
+    /// "Not this one": leave the meeting under way unrecorded, and go back to
+    /// normal once the signals go quiet.
+    private var skipping = false
+
+    /// The calendar is read once a minute, not on every poll: each read opens
+    /// the event store, and meetings do not start every five seconds.
+    private var calendarCheckedAt: Date?
+    private var calendarState: (meeting: Bool, title: String?) = (false, nil)
 
     /// Pausing means "stop deciding for me". It must not mean "abandon a
     /// recording in progress": the menu bar swaps Stop for Record Now when it
@@ -142,18 +159,40 @@ final class RecordingMonitor {
     /// nothing called it, so "Pause Auto-Record" paused a feature that was not
     /// running.
     func tick(now: Date = Date()) async {
-        let includeCalendar = settings.config.bool(ConfigKey.useCalendar, default: true)
+        let wantsCalendar = settings.config.bool(ConfigKey.useCalendar, default: true)
+        let readCalendar =
+            wantsCalendar && (calendarCheckedAt.map { now.timeIntervalSince($0) >= 60 } ?? true)
         let ignoredDevices = settings.list(ConfigKey.ignoredDevices)
         let ignoredCameras = settings.list(ConfigKey.ignoredCameras)
-        presence = await MeetingLibrary.offMainActor {
+        var state = await MeetingLibrary.offMainActor {
             Presence.current(
-                includeCalendar: includeCalendar,
+                includeCalendar: readCalendar,
                 ignoredDevices: ignoredDevices,
                 ignoredCameras: ignoredCameras
             )
         }
+        if readCalendar {
+            calendarCheckedAt = now
+            calendarState = (state.calendarMeeting, state.calendarTitle)
+        } else if wantsCalendar {
+            state.calendarMeeting = calendarState.meeting
+            state.calendarTitle = calendarState.title
+        }
+        presence = state
         await decide(now: now)
     }
+
+    /// Leave the meeting under way unrecorded.
+    func skipCurrentMeeting() {
+        guard status == .detected else { return }
+        skipping = true
+        detectedSince = nil
+        status = .skipped
+    }
+
+    /// Whether meetings start a recording on their own. Off, the signals are
+    /// still read, so the menu can say what it sees, and Record Now still works.
+    private var automatic: Bool { settings.config.bool(ConfigKey.autoRecord, default: true) }
 
     /// The state machine, separated from the polling so a test can drive it
     /// with a clock rather than by waiting.
@@ -174,9 +213,24 @@ final class RecordingMonitor {
         }
 
         if status == .recording {
-            if let quietSince, now.timeIntervalSince(quietSince) >= stopDelay {
+            if automatic, let quietSince, now.timeIntervalSince(quietSince) >= stopDelay {
                 await setRecording(false, now: now)
             }
+            return
+        }
+
+        if skipping {
+            guard !active else {
+                detectedSince = nil
+                status = .skipped
+                return
+            }
+            skipping = false
+        }
+
+        guard automatic else {
+            detectedSince = nil
+            status = .idle
             return
         }
 
@@ -219,12 +273,14 @@ final class RecordingMonitor {
             lastError = "No recorder is connected."
             return
         }
+        controlError = nil
         let succeeded = await control(recording)
         guard succeeded else {
             // A failed *stop* must stay .recording, or nothing ever retries it
             // and the recorder runs forever. Only a failed start falls back.
             lastError =
-                recording ? "Could not start the recording." : "Could not stop the recording."
+                controlError
+                ?? (recording ? "Could not start the recording." : "Could not stop the recording.")
             if recording {
                 status = meetingInProgress ? .detected : .idle
                 // Back off rather than retrying every poll against an OBS that
@@ -248,6 +304,31 @@ final class RecordingMonitor {
             quietSince = nil
         }
     }
+
+    /// Start or stop OBS. This is `control` in the app; tests inject their own.
+    func driveOBS(start: Bool) async -> Bool {
+        let connection = OBS.Connection(
+            host: settings.config.string(ConfigKey.obsHost, default: "localhost"),
+            port: settings.config.int(ConfigKey.obsPort, default: 4455),
+            password: settings.config.string(ConfigKey.obsPassword)
+        )
+        do {
+            if start {
+                try await OBS.startRecording(
+                    connection: connection, directory: settings.folder(ConfigKey.watch))
+            } else {
+                lastRecordingPath = try await OBS.stopRecording(connection: connection)
+            }
+            return true
+        } catch {
+            controlError =
+                (start ? "Could not start recording. " : "Could not stop recording. ")
+                + error.localizedDescription
+            return false
+        }
+    }
+
+    func clearError() { lastError = nil }
 
     /// Set the signals directly, so the state machine can be driven in a test
     /// without a microphone, a camera or a calendar.

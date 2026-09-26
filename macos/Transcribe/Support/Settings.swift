@@ -38,6 +38,9 @@ final class Settings {
     /// short enough that the CLI sees an edit made moments ago.
     private static let writeDelay = Duration.milliseconds(400)
 
+    /// Write one setting from outside a control, as connecting Reminders does.
+    func setValue(_ key: String, _ value: String) { set(key, value) }
+
     private func set(_ key: String, _ value: String) {
         guard config.values[key] != value else { return }
         config.values[key] = value
@@ -146,6 +149,20 @@ final class Settings {
 
     func folder(_ key: String) -> URL? { config.url(key) }
 
+    /// True when the provider notes are written with has a credential. Without
+    /// one, every automatic notes run would fail the same way.
+    var hasLLMCredential: Bool {
+        if config.string(ConfigKey.provider, default: "claude") == "openai" {
+            return !config.string(ConfigKey.openAIKey).isEmpty
+        }
+        return !config.string(ConfigKey.anthropicKey).isEmpty
+            || !config.string("anthropic_auth_token").isEmpty
+    }
+
+    var userName: String {
+        config.string(ConfigKey.userName).trimmingCharacters(in: .whitespaces)
+    }
+
     func setFolder(_ key: String, _ url: URL?) {
         set(key, url?.path(percentEncoded: false) ?? "")
     }
@@ -231,6 +248,8 @@ enum ConfigKey {
         transcriptBudget, boundaryBudget, categoryMaxTokens, diarizationShift,
         diarizationModelDir, videoExtensions, ignoredDevices, ignoredCameras,
         llmTimeout, llmRetries, "anthropic_auth_token",
+        userName, voiceMemos, voiceMemosLookback, autoCategorise, groupFields, autoProcess,
+        autoNotes, remindersSync, remindersScope, remindersDays, autoRecord,
     ]
 
     // Deliberately NOT in `covered`. Each is read by the pipeline and has no
@@ -244,6 +263,21 @@ enum ConfigKey {
 
     static let notesFolder = "apple_notes_folder"
     static let remindersList = "apple_reminders_list"
+
+    // Read by the pipeline as well as the app.
+    static let userName = "user_name"
+    static let voiceMemos = "voice_memos_auto_import"
+    static let voiceMemosLookback = "voice_memos_lookback_days"
+    static let autoCategorise = "auto_categorise"
+    static let groupFields = "group_fields"
+
+    // The app's own. The pipeline ignores keys it does not know.
+    static let autoProcess = "auto_process_recordings"
+    static let autoNotes = "auto_notes"
+    static let remindersSync = "reminders_sync"
+    static let remindersScope = "reminders_scope"
+    static let remindersDays = "reminders_sync_days"
+    static let autoRecord = "autorecord_enabled"
 
     static let meetingMode = "meeting_mode"
     static let calendarSource = "calendar_source"

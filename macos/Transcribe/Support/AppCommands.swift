@@ -25,10 +25,15 @@ final class AppCommands {
     }
 
     private(set) var refreshToken = 0
+    private(set) var chooseFolderToken = 0
     private(set) var request: Request?
     private var nextToken = 0
 
     func refresh() { refreshToken += 1 }
+
+    /// Moved off the toolbar, where an unlabelled folder icon sat beside the
+    /// buttons used every day, into the File menu.
+    func chooseFolder() { chooseFolderToken += 1 }
 
     func show(_ destination: Destination) {
         nextToken += 1

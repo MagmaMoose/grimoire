@@ -1,4 +1,5 @@
 import AVFoundation
+import AppKit
 import CoreAudio
 import EventKit
 import Foundation
@@ -21,11 +22,14 @@ enum Presence {
         var microphoneNames: [String] = []
         var cameraNames: [String] = []
         var calendarTitle: String?
+        /// The apps holding the microphone, where macOS can say (14.2 and later).
+        var microphoneApps: [String] = []
 
         var describe: String {
             var parts: [String] = []
+            let holders = microphoneApps.isEmpty ? microphoneNames : microphoneApps
             parts.append(
-                microphone ? "mic on (\(microphoneNames.joined(separator: ", ")))" : "mic off")
+                microphone ? "mic on (\(holders.joined(separator: ", ")))" : "mic off")
             parts.append(camera ? "camera on (\(cameraNames.joined(separator: ", ")))" : "camera off")
             if let calendarTitle { parts.append("in “\(calendarTitle)”") }
             return parts.joined(separator: " · ")
@@ -63,6 +67,16 @@ enum Presence {
         state.microphoneNames = runningMicrophones(
             ignoring: ignoredDevices.isEmpty ? self.ignoredDevices : ignoredDevices)
         state.microphone = !state.microphoneNames.isEmpty
+        if state.microphone, let apps = inputApps(), !apps.isEmpty {
+            let others = apps.filter { !ownMicrophoneUsers.contains($0) }
+            state.microphoneApps = others.map(appName)
+            // OBS holds the microphone for as long as it is open, recording or
+            // not. Counted, the recording it started kept itself going for
+            // ever, and any calendar event made an idle OBS look like a
+            // meeting. Only a positive sighting of nothing but OBS clears the
+            // signal: an empty or unreadable list leaves the device's word.
+            if others.isEmpty { state.microphone = false }
+        }
         state.cameraNames = runningCameras(
             ignoring: ignoredCameras.isEmpty ? self.ignoredCameras : ignoredCameras)
         state.camera = !state.cameraNames.isEmpty
@@ -94,6 +108,99 @@ enum Presence {
                 return start <= now && end >= now
             }?
             .title
+    }
+
+    // MARK: - Calendar access
+
+    /// Whether the calendar can be read. Without it the calendar signal is
+    /// silently never there, so a camera-off meeting is never recorded.
+    static var calendarAuthorised: Bool {
+        EKEventStore.authorizationStatus(for: .event) == .fullAccess
+    }
+
+    /// Ask for calendar access. Granted to this app, it also covers the CLI
+    /// runs this app starts, which macOS attributes to it.
+    static func requestCalendarAccess() async -> Bool {
+        if calendarAuthorised { return true }
+        return (try? await EKEventStore().requestFullAccessToEvents()) ?? false
+    }
+
+    // MARK: - Which apps hold the microphone
+
+    /// Apps whose own use of the microphone says nothing about a meeting: OBS
+    /// captures it for the recording, and this app never should.
+    static let ownMicrophoneUsers: Set<String> = [
+        "com.obsproject.obs-studio", "com.magmamoose.transcribe",
+    ]
+
+    /// Bundle identifiers of the processes using audio input right now, or nil
+    /// where macOS cannot say.
+    static func inputApps() -> [String]? {
+        guard #available(macOS 14.2, *) else { return nil }
+        return processesUsingInput()
+    }
+
+    @available(macOS 14.2, *)
+    private static func processesUsingInput() -> [String]? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else {
+            return nil
+        }
+        let count = Int(size) / MemoryLayout<AudioObjectID>.size
+        guard count > 0 else { return [] }
+        var processes = [AudioObjectID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &processes) == noErr else {
+            return nil
+        }
+        return processes.compactMap { process in
+            guard isRunningInput(process) else { return nil }
+            return bundleIdentifier(of: process) ?? "process \(process)"
+        }
+    }
+
+    @available(macOS 14.2, *)
+    private static func isRunningInput(_ process: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyIsRunningInput,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var running: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(process, &address, 0, nil, &size, &running) == noErr else {
+            return false
+        }
+        return running != 0
+    }
+
+    @available(macOS 14.2, *)
+    private static func bundleIdentifier(of process: AudioObjectID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyBundleID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var identifier: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        guard AudioObjectGetPropertyData(process, &address, 0, nil, &size, &identifier) == noErr
+        else { return nil }
+        let text = identifier as String
+        return text.isEmpty ? nil : text
+    }
+
+    /// A readable name for a bundle identifier, for the menu's signal line.
+    static func appName(_ bundleIdentifier: String) -> String {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
+            let name = FileManager.default.displayName(atPath: url.path(percentEncoded: false))
+            return name.hasSuffix(".app") ? String(name.dropLast(4)) : name
+        }
+        return bundleIdentifier.split(separator: ".").last.map(String.init) ?? bundleIdentifier
     }
 
     // MARK: - Microphone
