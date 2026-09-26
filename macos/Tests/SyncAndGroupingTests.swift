@@ -375,8 +375,9 @@ struct OBSTests {
     func unreachable() async {
         let started = Date()
         await #expect(throws: (any Error).self) {
-            _ = try await OBS.send(
-                "GetVersion", to: OBS.Connection(host: "127.0.0.1", port: 1, password: ""), timeout: 3)
+            // Port 1 on this machine: nothing listens there, so the refusal is immediate.
+            let closed = OBS.Connection(host: "127.0.0.1", port: 1, password: "")  // DevSkim: ignore DS162092 - a deliberately closed local port
+            _ = try await OBS.send("GetVersion", to: closed, timeout: 3)
         }
         #expect(Date().timeIntervalSince(started) < 10)
     }

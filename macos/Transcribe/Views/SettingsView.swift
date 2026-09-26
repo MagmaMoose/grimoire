@@ -497,11 +497,11 @@ private struct RecordingSettings: View {
             }
 
             Section("OBS") {
-                TextField("Host", text: settings.text(ConfigKey.obsHost, default: "localhost"))
+                TextField("Host", text: settings.text(ConfigKey.obsHost, default: OBS.defaultHost))
                 LabeledContent("Port") {
                     TextField(
                         "Port",
-                        value: settings.number(ConfigKey.obsPort, default: 4455),
+                        value: settings.number(ConfigKey.obsPort, default: OBS.defaultPort),
                         format: .number.grouping(.never)
                     )
                     .labelsHidden()
@@ -524,11 +524,7 @@ private struct RecordingSettings: View {
     private func test() {
         testing = true
         testResult = nil
-        let connection = OBS.Connection(
-            host: settings.config.string(ConfigKey.obsHost, default: "localhost"),
-            port: settings.config.int(ConfigKey.obsPort, default: 4455),
-            password: settings.config.string(ConfigKey.obsPassword)
-        )
+        let connection = OBS.Connection(settings: settings)
         Task {
             do {
                 _ = try await OBS.test(connection: connection)

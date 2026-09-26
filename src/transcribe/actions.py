@@ -46,7 +46,7 @@ class ActionItem:
     @property
     def ref(self):
         """A short handle for the command line, stable while the action is."""
-        return hashlib.sha1(self.key.encode("utf-8")).hexdigest()[:8]
+        return hashlib.sha256(self.key.encode("utf-8")).hexdigest()[:8]
 
     @property
     def assigned(self):

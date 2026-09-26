@@ -49,6 +49,8 @@ enum OBS {
     }
 
     static let bundleID = "com.obsproject.obs-studio"
+    static let defaultHost = "localhost"  // DevSkim: ignore DS162092 - OBS runs on this Mac, and its WebSocket server listens here by default
+    static let defaultPort = 4455
 
     // Request status codes from the obs-websocket protocol.
     static let outputRunning = 500
@@ -233,5 +235,18 @@ enum OBS {
     private static func send(_ socket: URLSessionWebSocketTask, _ object: [String: Any]) async throws {
         let data = try JSONSerialization.data(withJSONObject: object)
         try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+    }
+}
+
+extension OBS.Connection {
+    /// The connection Settings ▸ Recording describes. One place, so the
+    /// monitor and the Test Connection button cannot disagree about it.
+    @MainActor
+    init(settings: Settings) {
+        self.init(
+            host: settings.config.string(ConfigKey.obsHost, default: OBS.defaultHost),
+            port: settings.config.int(ConfigKey.obsPort, default: OBS.defaultPort),
+            password: settings.config.string(ConfigKey.obsPassword)
+        )
     }
 }

@@ -307,11 +307,7 @@ final class RecordingMonitor {
 
     /// Start or stop OBS. This is `control` in the app; tests inject their own.
     func driveOBS(start: Bool) async -> Bool {
-        let connection = OBS.Connection(
-            host: settings.config.string(ConfigKey.obsHost, default: "localhost"),
-            port: settings.config.int(ConfigKey.obsPort, default: 4455),
-            password: settings.config.string(ConfigKey.obsPassword)
-        )
+        let connection = OBS.Connection(settings: settings)
         do {
             if start {
                 try await OBS.startRecording(
