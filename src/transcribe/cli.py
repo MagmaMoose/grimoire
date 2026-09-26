@@ -491,7 +491,10 @@ def main():
     elif command == "actions":
         from .actions import run as run_actions
 
-        sys.exit(run_actions(args[1:], load_config()))
+        # --json was stripped above as the global write-notes.json flag. Here it
+        # asks for the listing as JSON, so it has to be handed back.
+        own = [*args[1:], "--json"] if "write_json" in selected else args[1:]
+        sys.exit(run_actions(own, load_config()))
     elif command == "search":
         from .search import run as run_search
 
