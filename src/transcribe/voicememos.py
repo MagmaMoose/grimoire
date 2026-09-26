@@ -15,9 +15,9 @@ exist on a given macOS version, the tables are introspected and columns matched
 by pattern. ``describe_library`` prints what was found, which is the fastest way
 to see why an import came back empty.
 
-The database is opened read-only and immutable. Nothing here writes to it, and
-nothing here moves or deletes a recording: the pipeline files its source, so an
-import hands it a copy and the memo stays playable in Voice Memos.
+The database is opened read-only. Nothing here writes to it, and nothing here
+moves or deletes a recording: the pipeline files its source, so an import hands
+it a copy and the memo stays playable in Voice Memos.
 
 Each import is recorded in ``~/.transcribe/voicememos-imported.json``, which is
 what lets the app and the watcher import new memos on their own without filing
@@ -75,8 +75,20 @@ def _full_disk_access_hint():
     )
 
 
+def _open(options):
+    connection = sqlite3.connect(f"file:{DATABASE}?{options}", uri=True)
+    try:
+        # Opening is lazy: the file, its log and the log's index are only opened
+        # by the first read, so that is where a refusal shows up.
+        connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error:
+        connection.close()
+        raise
+    return connection
+
+
 def _connect():
-    """Open the Voice Memos database read-only, never touching Apple's copy."""
+    """Open the Voice Memos database read-only, never writing to Apple's copy."""
     if not CONTAINER.exists():
         raise VoiceMemosUnavailable(f"Voice Memos is not set up on this Mac ({CONTAINER} missing)")
 
@@ -88,8 +100,21 @@ def _connect():
         raise VoiceMemosPermissionDenied(
             f"no Voice Memos database at {DATABASE}.\n{_full_disk_access_hint()}"
         )
+    # Voice Memos keeps its library open and commits a new recording to the
+    # write-ahead log, which reaches the file itself only at a later checkpoint.
+    # An immutable open never reads the log, so the newest memos, the ones the
+    # automatic import is for, stayed invisible until then. A plain read-only
+    # open reads the log under SQLite's own locking. With no log the file is
+    # complete on its own, and immutable avoids leaving a new log and index
+    # beside Apple's database.
+    has_log = DATABASE.with_name(f"{DATABASE.name}-wal").exists()
     try:
-        return sqlite3.connect(f"file:{DATABASE}?mode=ro&immutable=1", uri=True)
+        if has_log:
+            try:
+                return _open("mode=ro")
+            except sqlite3.Error as e:
+                print(f"Warning: Voice Memos log unreadable ({e}); newest memos may arrive late")
+        return _open("mode=ro&immutable=1")
     except sqlite3.Error as e:
         # sqlite cannot distinguish "denied" from "corrupt"; permission is far
         # and away the likelier cause here.

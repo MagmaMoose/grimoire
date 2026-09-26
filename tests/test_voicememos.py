@@ -1,5 +1,6 @@
 """Tests for importing Voice Memos without filing one twice or moving the original."""
 
+import sqlite3
 from datetime import datetime
 
 import pytest
@@ -136,3 +137,68 @@ def test_a_protected_library_is_a_permission_problem(monkeypatch, tmp_path):
     monkeypatch.setattr(voicememos.os, "access", lambda *a: False)
     with pytest.raises(voicememos.VoiceMemosPermissionDenied):
         voicememos._connect()
+
+
+def library(tmp_path, monkeypatch):
+    """A library in write-ahead-log mode, as Core Data keeps it, with its writer open."""
+    container = tmp_path / "container"
+    database = container / "Recordings" / "CloudRecordings.db"
+    database.parent.mkdir(parents=True)
+    monkeypatch.setattr(voicememos, "CONTAINER", container)
+    monkeypatch.setattr(voicememos, "DATABASE", database)
+    writer = sqlite3.connect(database)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("CREATE TABLE ZCLOUDRECORDING (ZPATH TEXT)")
+    writer.commit()
+    return database, writer
+
+
+def count(connection):
+    try:
+        return connection.execute("SELECT COUNT(*) FROM ZCLOUDRECORDING").fetchone()[0]
+    finally:
+        connection.close()
+
+
+def test_a_memo_still_in_the_log_is_seen(tmp_path, monkeypatch):
+    _database, writer = library(tmp_path, monkeypatch)
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    writer.execute("INSERT INTO ZCLOUDRECORDING VALUES ('New Recording.m4a')")
+    writer.commit()
+    try:
+        assert count(voicememos._connect()) == 1
+    finally:
+        writer.close()
+
+
+def test_a_closed_library_is_read_without_writing_beside_it(tmp_path, monkeypatch):
+    database, writer = library(tmp_path, monkeypatch)
+    writer.execute("INSERT INTO ZCLOUDRECORDING VALUES ('Old Recording.m4a')")
+    writer.commit()
+    writer.close()
+    # Some builds of SQLite keep an emptied log after the last close.
+    for suffix in ("-wal", "-shm"):
+        database.with_name(database.name + suffix).unlink(missing_ok=True)
+
+    assert count(voicememos._connect()) == 1
+    assert [path.name for path in database.parent.iterdir()] == [database.name]
+
+
+def test_an_unreadable_log_falls_back_to_the_file(tmp_path, monkeypatch, capsys):
+    _database, writer = library(tmp_path, monkeypatch)
+    tried = []
+
+    def fake_open(options):
+        tried.append(options)
+        if "immutable" not in options:
+            raise sqlite3.OperationalError("unable to open database file")
+        return "the file alone"
+
+    monkeypatch.setattr(voicememos, "_open", fake_open)
+    try:
+        assert voicememos._connect() == "the file alone"
+    finally:
+        writer.close()
+    assert tried == ["mode=ro", "mode=ro&immutable=1"]
+    assert "Voice Memos log unreadable" in capsys.readouterr().out
