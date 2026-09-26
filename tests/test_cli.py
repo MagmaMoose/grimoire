@@ -1,5 +1,6 @@
 """Tests for transcribe.cli: argument dispatch for every command path."""
 
+import json
 import sys
 
 import pytest
@@ -282,6 +283,22 @@ def test_new_commands_dispatch(monkeypatch, command, module, function):
         main()
     assert exc.value.code == 0
     assert seen["args"] == ["one", "--two"]
+
+
+def test_actions_json_survives_the_global_flag(monkeypatch, tmp_path, capsys):
+    folder = tmp_path / "2026-09-20 1000 Weekly sync"
+    folder.mkdir()
+    (folder / "notes.json").write_text(
+        json.dumps({"notes": {"next_steps": [{"owner": "Caleb", "title": "Send the budget"}]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "load_config", lambda: {"destination_directory": str(tmp_path)})
+    _run(monkeypatch, ["actions", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert [item["title"] for item in listed] == ["Send the budget"]
 
 
 def test_tidy_dispatches_and_reports_failure(monkeypatch):
