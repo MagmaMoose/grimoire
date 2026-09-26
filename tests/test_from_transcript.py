@@ -563,3 +563,110 @@ def test_a_still_valid_source_file_is_kept(tmp_path):
     folder = tmp_path / "m1"
     folder.mkdir()
     assert _source_reference(folder, {"source_file": str(original)}) == str(original)
+
+
+# --- placeholder titles --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Meeting 1", "meeting", "Untitled meeting", "New Recording 4", "Voice Memo 2026-09-26", ""],
+)
+def test_placeholder_titles_are_recognised(title):
+    assert from_transcript.is_placeholder_title(title)
+
+
+@pytest.mark.parametrize("title", ["Standup", "Meeting with Acme", "Camera subnet routing"])
+def test_real_titles_are_not_placeholders(title):
+    assert not from_transcript.is_placeholder_title(title)
+
+
+def test_a_placeholder_folder_takes_the_notes_title(tmp_path, capsys):
+    folder = tmp_path / "2026-09-26 1400 Meeting 1"
+    folder.mkdir()
+    (folder / "transcript.txt").write_text("x")
+    renamed = from_transcript.retitle_folder(folder, "Camera subnet routing")
+    assert renamed == tmp_path / "2026-09-26 1400 Camera subnet routing"
+    assert (renamed / "transcript.txt").exists()
+    # The exact wording the app parses to follow the rename.
+    assert f"Renamed folder to: {renamed}" in capsys.readouterr().out
+
+
+def test_a_date_only_folder_is_a_placeholder_too(tmp_path):
+    folder = tmp_path / "2026-09-26 1400"
+    folder.mkdir()
+    assert from_transcript.retitle_folder(folder, "Budget").name == "2026-09-26 1400 Budget"
+
+
+def test_a_named_folder_keeps_its_name(tmp_path):
+    folder = tmp_path / "2026-09-26 1400 Board prep"
+    folder.mkdir()
+    assert from_transcript.retitle_folder(folder, "Something else") == folder
+    assert folder.exists()
+
+
+def test_a_placeholder_is_not_replaced_with_another(tmp_path):
+    folder = tmp_path / "2026-09-26 1400 Meeting 1"
+    folder.mkdir()
+    assert from_transcript.retitle_folder(folder, "Meeting 2") == folder
+
+
+def test_a_rename_never_lands_on_an_existing_folder(tmp_path):
+    (tmp_path / "2026-09-26 1400 Budget").mkdir()
+    folder = tmp_path / "2026-09-26 1400 Meeting 1"
+    folder.mkdir()
+    renamed = from_transcript.retitle_folder(folder, "Budget")
+    assert renamed.name == "2026-09-26 1400 Budget (2)"
+
+
+def test_generating_notes_renames_a_placeholder_folder(monkeypatch, tmp_path, config):
+    folder = tmp_path / "2026-09-26 1400 Meeting 1"
+    folder.mkdir()
+    (folder / "transcript.txt").write_text(GROUPED)
+    import transcribe.notes as notes_mod
+
+    monkeypatch.setattr(
+        notes_mod, "complete_json", lambda *a, **k: {"title": "Release planning", "summary": "s"}
+    )
+    generate_for_folder(folder, config, name_speakers=False)
+    renamed = tmp_path / "2026-09-26 1400 Release planning"
+    assert not folder.exists()
+    assert (renamed / "notes.json").exists()
+    assert json.loads((renamed / "notes.json").read_text())["notes"]["title"] == "Release planning"
+
+
+# --- meetings missing notes ------------------------------------------------------
+
+
+def test_meetings_without_notes_are_found_newest_first(tmp_path):
+    for name in ("2026-09-01 0900 Old", "2026-09-20 0900 New"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "transcript.txt").write_text(GROUPED)
+    done = tmp_path / "2026-09-10 0900 Done"
+    done.mkdir()
+    (done / "transcript.txt").write_text(GROUPED)
+    (done / "notes.json").write_text(json.dumps({"notes": {"title": "Done"}}))
+    empty = tmp_path / "2026-09-11 0900 No transcript"
+    empty.mkdir()
+
+    found = from_transcript.folders_missing_notes(tmp_path)
+    assert [folder.name for folder in found] == ["2026-09-20 0900 New", "2026-09-01 0900 Old"]
+
+
+def test_a_failed_run_counts_as_missing_notes(tmp_path):
+    folder = tmp_path / "2026-09-20 0900 Meeting 1"
+    folder.mkdir()
+    (folder / "transcript.txt").write_text(GROUPED)
+    (folder / "notes.json").write_text(json.dumps({"notes": None, "segments": []}))
+    assert from_transcript.folders_missing_notes(tmp_path) == [folder]
+
+
+def test_old_meetings_can_be_left_out(tmp_path):
+    folder = tmp_path / "2001-01-01 0900 Ancient"
+    folder.mkdir()
+    (folder / "transcript.txt").write_text(GROUPED)
+    assert from_transcript.folders_missing_notes(tmp_path, since_days=30) == []
+
+
+def test_a_missing_destination_has_nothing_missing(tmp_path):
+    assert from_transcript.folders_missing_notes(tmp_path / "nope") == []

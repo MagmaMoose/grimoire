@@ -81,7 +81,13 @@ platform guards so the suite is cross-platform).
 | `gdrive.py` | Optional Google Drive folder URL resolution |
 | `tls.py` | TLS CA bundle fixup for frozen binaries |
 | `permissions.py` | macOS responsible-process lookup for permission grant hints |
-| `voicememos.py` | Import recordings and transcripts from the macOS Voice Memos app |
+| `voicememos.py` | Import recordings and transcripts from the macOS Voice Memos app, once each, from a copy |
+| `from_transcript.py` | Notes from a folder's existing transcript; retitles placeholder folders |
+| `categorise.py` | Categories and `group_fields` in `tags.json`; `transcribe tag` |
+| `actions.py` | Action items across meetings; done state shared with the app |
+| `search.py` | `transcribe search` over transcripts and notes |
+| `tidy.py` | Files processed recordings left in the watch folder |
+| `locks.py` | `flock` claims so the app and the watcher never process one file twice |
 
 ## Optional extras
 

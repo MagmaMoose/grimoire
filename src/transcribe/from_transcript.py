@@ -28,6 +28,7 @@ never had.
 import re
 from pathlib import Path
 
+from .media import MEDIA_SUFFIXES
 from .segments import Meeting, Segment
 
 # "[00:00:02] text" or "[01:02:03] text"
@@ -252,6 +253,58 @@ def _title_from_folder_name(name):
     return trimmed or name
 
 
+# The titles the pipeline and Voice Memos fall back to when there is nothing
+# better: "Meeting 1", "Untitled meeting", "New Recording 3", "Voice Memo <date>".
+_PLACEHOLDER_TITLE = re.compile(
+    r"^(meeting(\s+\d+)?|untitled(\s+meeting)?|new\s+recording(\s+\d+)?"
+    r"|recording(\s+\d+)?|voice\s+memo(\s.*)?)$",
+    re.IGNORECASE,
+)
+
+# The exact wording the macOS app looks for to follow a renamed folder.
+RENAMED_PREFIX = "Renamed folder to: "
+
+
+def is_placeholder_title(title):
+    """True when ``title`` is a fallback rather than a name anyone chose."""
+    text = (title or "").strip()
+    return not text or bool(_PLACEHOLDER_TITLE.match(text))
+
+
+def retitle_folder(folder, title):
+    """Rename a placeholder-titled folder after ``title``. Returns the folder's path.
+
+    Only a placeholder is ever replaced. A folder the user named, or one a
+    calendar event named, keeps its name: the notes title is a guess, and
+    overwriting a real name with a guess loses information.
+    """
+    from .processing import _unique_folder
+    from .render import safe_folder_name
+
+    folder = Path(folder)
+    name = folder.name
+    rest = _TEAMS_SUFFIX.sub("", _DATE_PREFIX.sub("", name)).strip()
+    if not title or is_placeholder_title(title) or not is_placeholder_title(rest):
+        return folder
+
+    match = _DATE_PREFIX.match(name)
+    prefix = match.group(0) if match else ""
+    if prefix and not prefix.endswith(" "):
+        prefix += " "
+    wanted = f"{prefix}{safe_folder_name(title)}"
+    if wanted == name:
+        return folder
+
+    target = _unique_folder(folder.parent, wanted)
+    try:
+        folder.rename(target)
+    except OSError as e:
+        print(f"  Warning: could not rename the folder ({type(e).__name__}: {e})")
+        return folder
+    print(f"✓ {RENAMED_PREFIX}{target}")
+    return target
+
+
 def _recording_start(folder, payload, meeting=None):
     """When the *recording* started, from previous notes or the folder name.
 
@@ -289,9 +342,6 @@ def _recording_start(folder, payload, meeting=None):
     return None
 
 
-_MEDIA_SUFFIXES = {".mov", ".mp4", ".m4v", ".m4a", ".qta", ".wav", ".mp3", ".mkv", ".avi"}
-
-
 def _source_reference(folder, payload):
     """What to record as the source file.
 
@@ -310,7 +360,7 @@ def _source_reference(folder, payload):
         if candidate.exists():
             return str(candidate.resolve())
 
-    media = sorted(entry for entry in folder.iterdir() if entry.suffix.lower() in _MEDIA_SUFFIXES)
+    media = sorted(entry for entry in folder.iterdir() if entry.suffix.lower() in MEDIA_SUFFIXES)
     if media:
         return str(media[0].resolve())
 
@@ -354,10 +404,10 @@ def generate_for_folder(folder, config, name_speakers=True):
     )
     if name_speakers and meeting.speakers() and not already_named:
         try:
-            from .notes import resolve_speaker_names
+            from .notes import naming_roster, resolve_speaker_names
 
             known = meeting.attendees or config.get("known_participants") or []
-            resolve_speaker_names(meeting, config, known)
+            resolve_speaker_names(meeting, config, naming_roster(known, config))
         except Exception as e:
             print(f"  Warning: could not name speakers ({type(e).__name__}: {e})")
 
@@ -376,6 +426,11 @@ def generate_for_folder(folder, config, name_speakers=True):
     meeting.title = notes.get("title") or meeting.title
     meeting.notes = notes
 
+    # "Meeting 1" is what a folder is called when its notes failed the first
+    # time. Now there is a real title, the folder takes it, before anything is
+    # written so the source reference resolves against where the media now is.
+    folder = retitle_folder(folder, notes.get("title"))
+
     _write_meeting_outputs(
         meeting,
         notes,
@@ -389,7 +444,54 @@ def generate_for_folder(folder, config, name_speakers=True):
         # prose transcript that reconstruction invents timestamps.
         write_transcript=False,
     )
+    from .categorise import categorise_quietly
+
+    categorise_quietly(folder, config)
     return notes
+
+
+def has_notes(folder):
+    """True when the folder's notes.json holds generated notes."""
+    import json
+
+    try:
+        with open(Path(folder) / "notes.json", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    return isinstance(payload, dict) and bool(payload.get("notes"))
+
+
+def folders_missing_notes(destination, since_days=None):
+    """Meeting folders with a transcript and no notes, newest first.
+
+    ``since_days`` limits it to meetings from the last few days, which is what
+    stops an unattended run from writing notes for years of old recordings.
+    """
+    from datetime import datetime, timedelta
+
+    root = Path(destination)
+    if not root.is_dir():
+        return []
+    cutoff = datetime.now() - timedelta(days=float(since_days)) if since_days else None
+
+    found = []
+    for folder in root.iterdir():
+        if not folder.is_dir() or folder.name.startswith("."):
+            continue
+        if find_transcript(folder) is None or has_notes(folder):
+            continue
+        when = _recording_start(folder, None)
+        if when is None:
+            try:
+                when = datetime.fromtimestamp(folder.stat().st_mtime)
+            except OSError:
+                continue
+        if cutoff and when < cutoff:
+            continue
+        found.append((when, folder))
+    found.sort(key=lambda item: item[0], reverse=True)
+    return [folder for _, folder in found]
 
 
 def generate_for_folders(folders, config):
@@ -424,7 +526,7 @@ def generate_for_folders(folders, config):
             failures += 1
             continue
         if notes:
-            print(f"✓ {notes.get('title') or folder.name}")
+            print(f"✓ Notes: {notes.get('title') or folder.name}")
             steps = notes.get("next_steps") or []
             if steps:
                 print(f"  {len(steps)} next step(s)")

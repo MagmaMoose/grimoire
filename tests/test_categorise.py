@@ -261,3 +261,132 @@ def test_one_bad_folder_does_not_abort_the_run(monkeypatch, tmp_path, config, ca
     )
     assert result == 0
     assert read_tags(good) == ["Architecture"]
+
+
+# --- grouping fields -------------------------------------------------------------
+
+
+def test_fields_round_trip_beside_the_categories(tmp_path):
+    write_tags(tmp_path, ["Standup"], {"Company": "Acme", "Project": " "})
+    assert categorise.read_fields(tmp_path) == {"Company": "Acme"}
+    assert json.loads((tmp_path / "tags.json").read_text())["fields"] == {"Company": "Acme"}
+
+
+def test_writing_categories_keeps_the_fields(tmp_path):
+    """A Company set by hand must survive the categoriser writing categories."""
+    write_tags(tmp_path, ["Standup"], {"Company": "Acme"})
+    write_tags(tmp_path, ["Architecture"])
+    assert categorise.read_fields(tmp_path) == {"Company": "Acme"}
+
+
+def test_a_file_with_only_fields_is_kept(tmp_path):
+    write_tags(tmp_path, [], {"Company": "Acme"})
+    assert (tmp_path / "tags.json").exists()
+    assert read_tags(tmp_path) == []
+
+
+def test_group_fields_come_from_the_config():
+    assert categorise.group_fields({"group_fields": ["Company", " ", "Project"]}) == [
+        "Company",
+        "Project",
+    ]
+    assert categorise.group_fields({"group_fields": "Company"}) == ["Company"]
+    assert categorise.group_fields({}) == []
+
+
+def test_fields_are_asked_for_and_written(monkeypatch, tmp_path, config):
+    make_meeting(tmp_path, "old").joinpath("tags.json").write_text(
+        json.dumps({"names": ["Standup"], "fields": {"Company": "Acme"}})
+    )
+    folder = make_meeting(tmp_path, "new")
+    seen = {}
+
+    def fake(config, system, user, schema, **kwargs):
+        seen.update(system=system, user=user, schema=schema)
+        return {"categories": ["Architecture"], "fields": {"Company": "Acme", "Project": ""}}
+
+    monkeypatch.setattr(categorise, "complete_json", fake)
+    names = categorise_meeting(folder, {**config, "group_fields": ["Company", "Project"]})
+    assert names == ["Architecture"]
+    assert categorise.read_fields(folder) == {"Company": "Acme"}
+    assert set(seen["schema"]["properties"]["fields"]["properties"]) == {"Company", "Project"}
+    assert "Existing Company values" in seen["user"]
+    assert "- Acme" in seen["user"]
+
+
+def test_a_meeting_with_categories_still_gets_its_missing_fields(monkeypatch, tmp_path, config):
+    folder = make_meeting(tmp_path, "m")
+    write_tags(folder, ["Standup"])
+    monkeypatch.setattr(
+        categorise,
+        "complete_json",
+        lambda *a, **k: {"categories": ["Other"], "fields": {"Company": "Globex"}},
+    )
+    categorise_meeting(folder, {**config, "group_fields": ["Company"]})
+    assert read_tags(folder) == ["Standup"]
+    assert categorise.read_fields(folder) == {"Company": "Globex"}
+
+
+def test_a_complete_meeting_is_left_alone(monkeypatch, tmp_path, config):
+    folder = make_meeting(tmp_path, "m")
+    write_tags(folder, ["Standup"], {"Company": "Acme"})
+    monkeypatch.setattr(categorise, "complete_json", lambda *a, **k: pytest.fail("no call"))
+    assert categorise_meeting(folder, {**config, "group_fields": ["Company"]}) is None
+
+
+def test_categorising_quietly_never_raises(monkeypatch, tmp_path, config, capsys):
+    folder = make_meeting(tmp_path, "m")
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(categorise, "complete_json", explode)
+    assert categorise.categorise_quietly(folder, config) is None
+    assert "could not categorise" in capsys.readouterr().out
+
+
+def test_categorising_quietly_can_be_switched_off(monkeypatch, tmp_path, config):
+    folder = make_meeting(tmp_path, "m")
+    monkeypatch.setattr(categorise, "complete_json", lambda *a, **k: pytest.fail("no call"))
+    assert categorise.categorise_quietly(folder, {**config, "auto_categorise": False}) is None
+
+
+def test_categorising_quietly_reports_what_it_wrote(monkeypatch, tmp_path, config, capsys):
+    folder = make_meeting(tmp_path, "m")
+    monkeypatch.setattr(categorise, "complete_json", lambda *a, **k: {"categories": ["Hiring"]})
+    assert categorise.categorise_quietly(folder, config) == ["Hiring"]
+    assert "Categories: Hiring" in capsys.readouterr().out
+
+
+# --- transcribe tag ----------------------------------------------------------------
+
+
+def test_tag_shows_what_a_meeting_has(tmp_path, capsys):
+    write_tags(tmp_path, ["Standup"], {"Company": "Acme"})
+    assert categorise.run_tag([str(tmp_path)], {}) == 0
+    output = capsys.readouterr().out
+    assert "Categories: Standup" in output
+    assert "Company: Acme" in output
+
+
+def test_tag_changes_categories_and_fields(tmp_path):
+    write_tags(tmp_path, ["Standup", "Hiring"], {"Company": "Acme", "Project": "Old"})
+    args = [str(tmp_path), "--add", "Architecture", "--remove", "hiring"]
+    args += ["--set", "Company=Globex", "--unset", "Project"]
+    assert categorise.run_tag(args, {}) == 0
+    assert read_tags(tmp_path) == ["Standup", "Architecture"]
+    assert categorise.read_fields(tmp_path) == {"Company": "Globex"}
+
+
+def test_tag_set_with_an_empty_value_clears_the_field(tmp_path):
+    write_tags(tmp_path, ["Standup"], {"Company": "Acme"})
+    assert categorise.run_tag([str(tmp_path), "--set", "Company="], {}) == 0
+    assert categorise.read_fields(tmp_path) == {}
+
+
+@pytest.mark.parametrize(
+    "args", [[], ["/definitely/not/here"], ["--add"], ["{folder}", "--set", "NoEquals"]]
+)
+def test_tag_rejects_bad_arguments(tmp_path, args):
+    args = [arg.replace("{folder}", str(tmp_path)) for arg in args]
+    assert categorise.run_tag(args, {}) == 1

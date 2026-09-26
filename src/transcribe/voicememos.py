@@ -15,15 +15,26 @@ exist on a given macOS version, the tables are introspected and columns matched
 by pattern. ``describe_library`` prints what was found, which is the fastest way
 to see why an import came back empty.
 
-The database is opened read-only and immutable. Nothing here writes to it.
+The database is opened read-only and immutable. Nothing here writes to it, and
+nothing here moves or deletes a recording: the pipeline files its source, so an
+import hands it a copy and the memo stays playable in Voice Memos.
+
+Each import is recorded in ``~/.transcribe/voicememos-imported.json``, which is
+what lets the app and the watcher import new memos on their own without filing
+the same memo twice.
 """
 
+import json
 import os
 import plistlib
 import re
+import shutil
 import sqlite3
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from . import config as config_mod
 
 CONTAINER = Path.home() / "Library/Group Containers/group.com.apple.VoiceMemos.shared"
 RECORDINGS_DIR = CONTAINER / "Recordings"
@@ -47,6 +58,14 @@ class VoiceMemosUnavailable(RuntimeError):
     """Raised when the Voice Memos library cannot be read."""
 
 
+class VoiceMemosPermissionDenied(VoiceMemosUnavailable):
+    """Raised when the library exists but this process may not read it.
+
+    Separate from the general case because the fix is different: this one is a
+    Full Disk Access grant, and the app offers to open that settings page.
+    """
+
+
 def _full_disk_access_hint():
     """Explain which app to grant Full Disk Access to."""
     from .permissions import grant_hint
@@ -64,9 +83,9 @@ def _connect():
     # The container is stat-able without Full Disk Access but not readable, so a
     # missing-looking database usually means the permission, not the app.
     if not os.access(CONTAINER, os.R_OK):
-        raise VoiceMemosUnavailable(_full_disk_access_hint())
+        raise VoiceMemosPermissionDenied(_full_disk_access_hint())
     if not DATABASE.exists():
-        raise VoiceMemosUnavailable(
+        raise VoiceMemosPermissionDenied(
             f"no Voice Memos database at {DATABASE}.\n{_full_disk_access_hint()}"
         )
     try:
@@ -74,7 +93,7 @@ def _connect():
     except sqlite3.Error as e:
         # sqlite cannot distinguish "denied" from "corrupt"; permission is far
         # and away the likelier cause here.
-        raise VoiceMemosUnavailable(
+        raise VoiceMemosPermissionDenied(
             f"could not open the Voice Memos database.\n{_full_disk_access_hint()}"
         ) from e
 
@@ -353,3 +372,172 @@ def describe_library():
         },
         "transcript_columns_anywhere": transcript_columns,
     }
+
+
+# --- Importing ----------------------------------------------------------------
+
+LEDGER_NAME = "voicememos-imported.json"
+
+# Voice Memos names an untitled memo "New Recording", "New Recording 2", and so
+# on. That is no better a meeting title than the pipeline's own placeholder.
+_DEFAULT_MEMO_TITLE = re.compile(r"^(new recording|voice memo)\b", re.IGNORECASE)
+
+
+def _ledger_path():
+    # Read at call time so tests can redirect CONFIG_DIR.
+    return config_mod.CONFIG_DIR / LEDGER_NAME
+
+
+def memo_key(memo):
+    """A stable identity for a memo: its file in the Recordings directory.
+
+    The file name is unique per memo and survives a rename in the app, which the
+    title does not.
+    """
+    if memo.get("audio_path"):
+        return Path(memo["audio_path"]).name
+    recorded = memo.get("recorded_at")
+    stamp = recorded.isoformat() if hasattr(recorded, "isoformat") else str(recorded)
+    return f"{memo.get('title') or 'memo'}|{stamp}"
+
+
+def load_imported():
+    """Memos already imported, keyed by ``memo_key``."""
+    try:
+        data = json.loads(_ledger_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    imported = data.get("imported") if isinstance(data, dict) else None
+    return imported if isinstance(imported, dict) else {}
+
+
+def _save_imported(imported):
+    path = _ledger_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    temporary.write_text(
+        json.dumps({"imported": imported}, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    os.chmod(temporary, 0o600)
+    # A rename, so a crash mid-write leaves the previous ledger rather than half
+    # of one, and a half-written ledger would re-import everything.
+    os.replace(temporary, path)
+
+
+def mark_imported(memo, status="imported"):
+    """Record that ``memo`` has been dealt with, so it is never imported again."""
+    imported = load_imported()
+    recorded = memo.get("recorded_at")
+    imported[memo_key(memo)] = {
+        "title": memo.get("title"),
+        "recorded_at": recorded.isoformat() if hasattr(recorded, "isoformat") else None,
+        "imported_at": datetime.now().isoformat(timespec="seconds"),
+        "status": status,
+    }
+    _save_imported(imported)
+
+
+def title_hint(memo):
+    """The memo's own label, when the user gave it one."""
+    title = (memo.get("title") or "").strip()
+    if not title or _DEFAULT_MEMO_TITLE.match(title):
+        return None
+    return title
+
+
+def _import_one(memo, config, prefer_app):
+    """Run one memo through the pipeline. Returns True when it produced notes."""
+    from .processing import EXIT_OK, process_transcript, process_video_file
+
+    if prefer_app and memo["transcript"]:
+        return bool(
+            process_transcript(
+                memo["audio_path"],
+                memo["transcript"],
+                config,
+                title=memo["title"],
+                recorded_at=memo["recorded_at"],
+                duration=memo["duration"],
+            )
+        )
+
+    if memo["audio_path"]:
+        # The pipeline moves its source into the meeting folder. Pointed at the
+        # memo itself, that took the file out of the Voice Memos library and
+        # left the app a memo it could no longer play. It gets a copy instead.
+        staging = Path(tempfile.mkdtemp(prefix="transcribe-memo-"))
+        try:
+            copy = staging / Path(memo["audio_path"]).name
+            shutil.copy2(memo["audio_path"], copy)
+            status = process_video_file(str(copy), config, title=title_hint(memo))
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        return status == EXIT_OK
+
+    if memo["transcript"]:
+        # No readable audio, so the app's transcript beats nothing.
+        print(f"{memo['title']!r}: audio unreadable, using the Voice Memos transcript")
+        return bool(
+            process_transcript(
+                None,
+                memo["transcript"],
+                config,
+                title=memo["title"],
+                recorded_at=memo["recorded_at"],
+                duration=memo["duration"],
+            )
+        )
+
+    print(f"Skipping {memo['title']!r}: no readable audio and no transcript")
+    return False
+
+
+def import_memos(memos, config, force=False, prefer_app=False):
+    """Import every memo not imported before. Returns ``(imported, skipped, failed)``.
+
+    A memo that fails is not recorded, so the next run tries it again. One that
+    another process is importing right now is skipped, not waited for.
+    """
+    from .locks import AlreadyClaimed, claim
+
+    imported = skipped = failed = 0
+    for memo in memos:
+        key = memo_key(memo)
+        if not force and key in load_imported():
+            skipped += 1
+            continue
+        try:
+            with claim(memo.get("audio_path") or key):
+                # Checked again under the claim: the other process may have
+                # finished this memo while this one was busy with the last.
+                if not force and key in load_imported():
+                    skipped += 1
+                    continue
+                if _import_one(memo, config, prefer_app):
+                    mark_imported(memo)
+                    imported += 1
+                else:
+                    failed += 1
+        except AlreadyClaimed:
+            print(f"Skipping {memo['title']!r}: another transcribe process is importing it")
+            skipped += 1
+    return imported, skipped, failed
+
+
+def import_new_memos(config, lookback_days=None):
+    """Import memos from the last few days that have not been imported yet.
+
+    The unattended path, for the app and the watcher. The window stops the first
+    run from filing years of voice notes nobody asked to see as meetings.
+    """
+    days = float(lookback_days or config.get("voice_memos_lookback_days", 7))
+    memos = list_memos(since=datetime.now() - timedelta(days=days))
+    known = load_imported()
+    fresh = [memo for memo in memos if memo_key(memo) not in known]
+    if not fresh:
+        return 0, len(memos), 0
+    # Oldest first, so meetings are filed in the order they happened.
+    fresh.sort(key=lambda memo: memo.get("recorded_at") or datetime.min)
+    print(f"{len(fresh)} new Voice Memo(s) to import")
+    imported, skipped, failed = import_memos(fresh, config)
+    return imported, skipped + len(memos) - len(fresh), failed

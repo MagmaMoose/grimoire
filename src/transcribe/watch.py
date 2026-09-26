@@ -2,11 +2,18 @@
 
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
 from .processing import process_video_file
+
+# How often the watcher looks for new Voice Memos, when that is switched on.
+VOICE_MEMOS_POLL_SECONDS = 10 * 60
+# After a permission failure, how long before trying again. Full Disk Access is
+# granted by hand, so retrying every poll only repeats the same error.
+VOICE_MEMOS_BLOCKED_SECONDS = 60 * 60
 
 # How long a file's size must stay unchanged before it counts as finished.
 STABLE_SECONDS = 10
@@ -66,6 +73,10 @@ def watch_directory(directory, config):
     startup_msg += f"Extensions: {', '.join(config.get('video_extensions', []))}\n"
     print(startup_msg, flush=True)
 
+    # One heavy job at a time: a recording and a Voice Memo transcribing
+    # together would each run at half speed and double the memory.
+    busy = threading.Lock()
+
     class VideoHandler(FileSystemEventHandler):
         def __init__(self, config):
             self.config = config
@@ -89,7 +100,8 @@ def watch_directory(directory, config):
                     print(f"Detected new file: {Path(file_path).name}", flush=True)
                     print("Waiting for the recording to finish writing...", flush=True)
                     if wait_until_stable(file_path) and Path(file_path).exists():
-                        process_video_file(file_path, self.config)
+                        with busy:
+                            process_video_file(file_path, self.config)
                 finally:
                     self.processing.discard(file_path)
 
@@ -103,10 +115,51 @@ def watch_directory(directory, config):
     observer.schedule(event_handler, directory, recursive=False)
     observer.start()
 
+    memos = VoiceMemoPoller(config, busy)
     try:
         while True:
             time.sleep(1)
+            memos.poll()
     except KeyboardInterrupt:
         print("\nStopping watch...")
         observer.stop()
     observer.join()
+
+
+class VoiceMemoPoller:
+    """Imports new Voice Memos every few minutes, when ``voice_memos_auto_import`` is on.
+
+    Kept out of the watchdog handler: Voice Memos writes into its own library,
+    not the watch folder, so there is no file event to react to.
+    """
+
+    def __init__(self, config, busy, clock=time.monotonic):
+        self.config = config
+        self.busy = busy
+        self.clock = clock
+        self.next_check = 0.0
+
+    def poll(self):
+        if not self.config.get("voice_memos_auto_import", True):
+            return None
+        now = self.clock()
+        if now < self.next_check:
+            return None
+        self.next_check = now + VOICE_MEMOS_POLL_SECONDS
+
+        from .voicememos import VoiceMemosPermissionDenied, VoiceMemosUnavailable, import_new_memos
+
+        try:
+            with self.busy:
+                return import_new_memos(self.config)
+        except VoiceMemosPermissionDenied as e:
+            self.next_check = now + VOICE_MEMOS_BLOCKED_SECONDS
+            print(f"Voice Memos import paused for an hour: {e}", flush=True)
+        except VoiceMemosUnavailable as e:
+            # Not a permission: there is no Voice Memos library on this machine,
+            # which polling will not change. Said once, not every hour.
+            self.next_check = float("inf")
+            print(f"Voice Memos import off: {e}", flush=True)
+        except Exception as e:
+            print(f"Warning: Voice Memos import failed ({type(e).__name__}: {e})", flush=True)
+        return None
