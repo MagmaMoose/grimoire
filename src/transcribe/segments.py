@@ -48,6 +48,9 @@ class Meeting:
     attendees: list[str] = field(default_factory=list)
     calendar_event: dict | None = None
     notes: dict | None = None
+    # False when the timestamps were spread evenly across untimed text rather
+    # than measured. The notes prompt must not invite citing those.
+    timings_are_measured: bool = True
 
     @property
     def duration(self):

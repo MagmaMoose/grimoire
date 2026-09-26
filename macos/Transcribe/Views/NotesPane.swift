@@ -70,8 +70,11 @@ struct NotesPane: View {
             Section8("Next steps") {
                 ForEach(notes.nextSteps) { step in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        // Decorative: the tickable list lives in Action
+                        // items, so this must not read as a control.
                         Image(systemName: "square")
                             .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text(step.title).fontWeight(.medium)
@@ -192,8 +195,18 @@ enum Timecode {
         return parts.reduce(0) { $0 * 60 + $1 }
     }
 
+    /// `Int(Double)` traps on NaN, on infinity, and on anything outside Int's
+    /// range. A hand-edited or truncated notes.json reaches this, and a trap
+    /// takes the whole app down rather than showing one wrong duration.
     static func text(from seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0, seconds < 1e9 else { return "--:--:--" }
         let total = Int(seconds.rounded(.down))
         return String(format: "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+    }
+
+    /// Whole minutes, or nil when the value is not a usable duration.
+    static func minutes(from seconds: Double) -> Int? {
+        guard seconds.isFinite, seconds > 0, seconds < 1e9 else { return nil }
+        return Int(seconds / 60)
     }
 }

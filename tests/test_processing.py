@@ -311,3 +311,42 @@ def test_process_loads_config_when_none(monkeypatch, tmp_path):
     video.write_bytes(b"d")
     process_video_file(str(video), None)
     assert loaded["called"] is True
+
+
+def test_write_meeting_outputs_can_leave_the_transcript_alone(tmp_path):
+    """A meeting built from a folder's own transcript must not rewrite it."""
+    from transcribe.processing import _write_meeting_outputs
+    from transcribe.segments import Meeting, Segment
+
+    folder = tmp_path / "m"
+    folder.mkdir()
+    original = "the original transcript, in whatever shape it came in"
+    (folder / "transcript.txt").write_text(original)
+
+    meeting = Meeting(index=1, start=0, end=10, segments=[Segment(start=0, end=10, text="hello")])
+    _write_meeting_outputs(
+        meeting,
+        {"title": "T", "summary": "s"},
+        folder,
+        "/x/source.mov",
+        None,
+        {},
+        split_video=False,
+        write_transcript=False,
+    )
+
+    assert (folder / "transcript.txt").read_text() == original
+    assert (folder / "notes.json").exists()
+
+
+def test_write_meeting_outputs_writes_the_transcript_by_default(tmp_path):
+    from transcribe.processing import _write_meeting_outputs
+    from transcribe.segments import Meeting, Segment
+
+    folder = tmp_path / "m"
+    folder.mkdir()
+    meeting = Meeting(index=1, start=0, end=10, segments=[Segment(start=0, end=10, text="hello")])
+    _write_meeting_outputs(
+        meeting, {"title": "T"}, folder, "/x/source.mov", None, {}, split_video=False
+    )
+    assert "hello" in (folder / "transcript.txt").read_text()

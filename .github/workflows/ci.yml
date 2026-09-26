@@ -35,3 +35,57 @@ jobs:
         run: uv run ruff format --check .
       - name: Pytest
         run: uv run pytest -q
+
+  macos-app:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # The project file is generated and committed. Regenerating and diffing
+      # catches the case where a Swift file was added without regenerating: it
+      # would compile in a filesystem-globbing sweep and still be absent from
+      # the target.
+      - name: Project file is up to date
+        working-directory: macos
+        run: |
+          xcodegen generate
+          git diff --exit-code -- Transcribe.xcodeproj             || { echo "::error::Transcribe.xcodeproj is stale. Run 'xcodegen generate' in macos/ and commit it."; exit 1; }
+
+      - name: Typecheck the whole tree
+        working-directory: macos
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          TARGET=$(grep -A2 'deploymentTarget:' project.yml | grep macOS | tr -d ' "' | cut -d: -f2)
+          xcrun --sdk macosx swiftc -typecheck \
+            -target "arm64-apple-macosx${TARGET}" \
+            -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+            $(find Transcribe -name '*.swift')
+
+      - name: Test
+        working-directory: macos
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          xcodebuild -project Transcribe.xcodeproj -scheme Transcribe \
+            -destination 'platform=macOS' -derivedDataPath build test | xcpretty || exit ${PIPESTATUS[0]}
+
+      - name: Release build
+        working-directory: macos
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          xcodebuild -project Transcribe.xcodeproj -scheme Transcribe \
+            -configuration Release -derivedDataPath build build | xcpretty || exit ${PIPESTATUS[0]}
+
+      # A debug entitlement in a Release build lets any process attach a
+      # debugger to it.
+      - name: No debug entitlement in Release
+        working-directory: macos
+        run: |
+          if codesign -d --entitlements - build/Build/Products/Release/Transcribe.app 2>&1 \
+              | grep -q "get-task-allow"; then
+            echo "::error::Release build carries com.apple.security.get-task-allow"
+            exit 1
+          fi

@@ -16,6 +16,13 @@ struct MeetingFolder: Identifiable, Hashable, Sendable {
     /// Nil until the folder has been listed. See ``MeetingLibrary/contents(of:)``.
     var contents: Contents?
 
+    // Identity is the folder, not its contents. The synthesised conformance
+    // would include `contents`, and since the sidebar tags rows with the whole
+    // value, filling that in mid-scan changes the tag and silently drops the
+    // user's selection.
+    static func == (lhs: MeetingFolder, rhs: MeetingFolder) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+
     struct Contents: Hashable, Sendable {
         var notesJSON: URL?
         var transcriptText: URL?
@@ -76,7 +83,21 @@ final class MeetingLibrary {
         case loading
         case loaded
         case failed(String)
+        /// The folder exists but this app cannot read it. Picking it in an open
+        /// panel is what grants access, so this is a distinct state with its own
+        /// call to action rather than a generic failure.
+        case needsAccess(URL)
     }
+
+    /// How long to wait for the first listing before assuming the folder is
+    /// unreadable.
+    ///
+    /// A denied read of a protected location does not fail fast. macOS blocks
+    /// the process inside `open(2)` and never returns, so there is nothing to
+    /// catch and no error to report -- measured against an iCloud Drive folder
+    /// that the same code lists in 0.04s from a terminal that holds the grant.
+    /// Without a deadline the window simply spins forever.
+    nonisolated static let listingSeconds: Double = 4
 
     private(set) var folders: [MeetingFolder] = []
     private(set) var phase: Phase = .idle
@@ -88,6 +109,37 @@ final class MeetingLibrary {
     /// body of an async method, which is released at every await.
     private var loadID = 0
     private var enrichTask: Task<Void, Never>?
+
+    /// Roots whose listing blocked past the deadline. Each attempt strands a
+    /// worker on the shared queue for as long as the syscall hangs, so a user
+    /// clicking Refresh repeatedly would starve every other background read.
+    private var blockedRoots: Set<URL> = []
+
+    /// Let a root be tried again, for the Choose Folder button, which is the
+    /// action that actually changes the answer.
+    func forget(root: URL) { blockedRoots.remove(root) }
+
+    /// Runs blocking filesystem work off the main actor.
+    ///
+    /// A detached task is not enough. Under the Swift 5 language mode a closure
+    /// written inside a `@MainActor` method picks up that isolation, so the
+    /// work hops straight back to the main thread. Sampling the running app
+    /// caught exactly that: every sample had the main thread parked inside
+    /// `contentsOfDirectory`, which is the window not redrawing. An explicit
+    /// queue hop cannot be undone by isolation inference.
+    private nonisolated static let ioQueue = DispatchQueue(
+        label: "com.magmamoose.transcribe.io",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
+    nonisolated static func offMainActor<T: Sendable>(
+        _ work: @escaping @Sendable () -> T
+    ) async -> T {
+        await withCheckedContinuation { continuation in
+            ioQueue.async { continuation.resume(returning: work()) }
+        }
+    }
 
     func load(root: URL?) async {
         loadID += 1
@@ -102,11 +154,27 @@ final class MeetingLibrary {
         }
 
         phase = .loading
-        let found = await Task.detached(priority: .userInitiated) {
-            Self.scan(root: root)
-        }.value
+
+        // Retrying a root already known to hang just strands another worker.
+        if blockedRoots.contains(root) {
+            folders = []
+            phase = .needsAccess(root)
+            return
+        }
+
+        guard let found = await Self.scanWithDeadline(root: root) else {
+            guard id == loadID else { return }
+            // Clear, or the previous folder's meetings stay live in the sidebar,
+            // the search index and the action list while the screen says the
+            // folder cannot be read.
+            folders = []
+            blockedRoots.insert(root)
+            phase = .needsAccess(root)
+            return
+        }
 
         guard id == loadID else { return }
+        blockedRoots.remove(root)
         folders = found
         phase =
             found.isEmpty
@@ -115,6 +183,48 @@ final class MeetingLibrary {
 
         guard !found.isEmpty else { return }
         enrichTask = Task { await enrich(id: id) }
+    }
+
+    /// Resumes once, for whichever of the scan and the deadline lands first.
+    ///
+    /// `@unchecked Sendable` with an explicit lock: the two callers are on
+    /// different queue threads, and a continuation resumed twice is a crash.
+    private final class FirstWins: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<[MeetingFolder]?, Never>?
+
+        init(_ continuation: CheckedContinuation<[MeetingFolder]?, Never>) {
+            self.continuation = continuation
+        }
+
+        func resume(_ value: [MeetingFolder]?) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            pending?.resume(returning: value)
+        }
+    }
+
+    /// The first listing, or nil if it did not come back in time.
+    ///
+    /// Not a task group. Leaving a `withTaskGroup` body implicitly awaits every
+    /// remaining child, and `cancelAll()` only *requests* cancellation -- the
+    /// scan is parked in a continuation around a blocking syscall and has no
+    /// cancellation handler, so the group waited for it anyway and the deadline
+    /// did nothing at all. Measured: a 2s deadline against a 10s block returned
+    /// after 10s.
+    ///
+    /// The blocked thread cannot be cancelled, so it is abandoned. One stranded
+    /// thread is a far better outcome than a window that never draws.
+    private nonisolated static func scanWithDeadline(root: URL) async -> [MeetingFolder]? {
+        await withCheckedContinuation { continuation in
+            let once = FirstWins(continuation)
+            // The queue is concurrent, so the deadline is not queued behind the
+            // scan it is timing.
+            ioQueue.async { once.resume(scan(root: root)) }
+            ioQueue.asyncAfter(deadline: .now() + listingSeconds) { once.resume(nil) }
+        }
     }
 
     /// Lists every folder's files, a few at a time, updating the list as each
@@ -158,12 +268,12 @@ final class MeetingLibrary {
 
     /// The files in one folder, listing it now if the background pass has not
     /// reached it yet. Selecting a meeting must not wait for the queue.
-    func contents(of folder: MeetingFolder) async -> MeetingFolder.Contents {
-        if let contents = folder.contents { return contents }
+    func contents(of folder: MeetingFolder, refresh: Bool = false) async -> MeetingFolder.Contents {
+        // `refresh` skips the cache: after the pipeline writes to a folder, the
+        // cached listing describes what was there before it ran.
+        if !refresh, let contents = folder.contents { return contents }
         let url = folder.id
-        let contents = await Task.detached(priority: .userInitiated) {
-            Self.listContents(of: url)
-        }.value
+        let contents = await Self.offMainActor { Self.listContents(of: url) }
         if let position = folders.firstIndex(where: { $0.id == url }) {
             folders[position].contents = contents
         }
@@ -174,26 +284,20 @@ final class MeetingLibrary {
     /// hundreds of kilobytes and parses hundreds of segments.
     nonisolated static func loadRecord(_ url: URL?) async throws -> MeetingRecord? {
         guard let url else { return nil }
-        return try await Task.detached(priority: .userInitiated) {
-            let data = try Data(contentsOf: url)
-            return try PipelineDate.decoder().decode(MeetingRecord.self, from: data)
-        }.value
+        return try await offMainActor {
+            Result {
+                try PipelineDate.decoder().decode(
+                    MeetingRecord.self, from: try Data(contentsOf: url))
+            }
+        }.get()
     }
 
     nonisolated static func loadText(_ url: URL?) async -> String? {
         guard let url else { return nil }
-        return await Task.detached(priority: .userInitiated) {
-            try? String(contentsOf: url, encoding: .utf8)
-        }.value
+        return await offMainActor { try? String(contentsOf: url, encoding: .utf8) }
     }
 
     // MARK: - Scanning
-
-    // nonisolated because the scan runs off the main actor. Without it this is a
-    // warning today and a hard error under the Swift 6 language mode.
-    private nonisolated static let mediaExtensions: Set<String> = [
-        "mov", "mp4", "m4a", "qta", "wav", "mp3",
-    ]
 
     /// Lists the root only. No per-folder IO, so this stays fast on a network
     /// or cloud volume.
@@ -249,14 +353,7 @@ final class MeetingLibrary {
             summaryText: files.first { $0.lastPathComponent == "summary.txt" }
                 ?? bySuffix("_summary.txt"),
             notesHTML: files.first { $0.lastPathComponent == "notes.html" },
-            media: files
-                .filter { mediaExtensions.contains($0.pathExtension.lowercased()) }
-                // Prefer video over the extracted audio sitting beside it.
-                .sorted {
-                    ($0.pathExtension.lowercased() == "wav" ? 1 : 0)
-                        < ($1.pathExtension.lowercased() == "wav" ? 1 : 0)
-                }
-                .first
+            media: Media.preferred(from: files)
         )
     }
 

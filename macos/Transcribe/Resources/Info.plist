@@ -32,6 +32,32 @@
 	     the CLI was launched from, which is the whole reason for bundling it.
 	     Without these strings the request is denied outright rather than
 	     prompting, and nothing appears in System Settings to grant later. -->
+	<!-- Meeting folders usually live in iCloud Drive, which macOS treats as a
+	     protected location. Without these the prompt never appears and the read
+	     blocks in open(2) with no error to report. -->
+	<key>NSFileProviderDomainUsageDescription</key>
+	<string>Transcribe reads your meeting folders, which usually live in iCloud Drive.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Transcribe reads meeting folders you point it at.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Transcribe reads meeting folders you point it at.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Transcribe reads meeting folders you point it at.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Transcribe reads meeting folders stored on network volumes.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Transcribe reads meeting folders stored on external drives.</string>
+	<!-- Reminders: EventKit, for exporting a meeting's action items. -->
+	<key>NSRemindersUsageDescription</key>
+	<string>Transcribe adds a meeting's action items to your Reminders.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Transcribe adds a meeting's action items to your Reminders.</string>
+
+	<!-- Notes has no public API, so notes are filed by driving it with
+	     AppleScript. Without this key the automation prompt never appears and
+	     the request is refused with errAEEventNotPermitted (-1743). -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Transcribe files your meeting notes into the Notes app.</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>Transcribe reads your calendar to title meetings and list who was invited.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>

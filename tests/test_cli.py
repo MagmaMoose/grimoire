@@ -1,5 +1,7 @@
 """Tests for transcribe.cli: argument dispatch for every command path."""
 
+import sys
+
 import pytest
 
 from transcribe import cli
@@ -183,3 +185,43 @@ def test_configure_masks_secrets(monkeypatch, capsys):
     assert "sk-secret" not in out
     assert "https://hooks/x" not in out
     assert "xoxb-super-secret" not in out
+
+
+# --- categorise scope --------------------------------------------------------
+
+
+def test_categorise_without_a_target_does_not_run_over_everything(monkeypatch, capsys):
+    """One LLM call per meeting is not something a bare command should do."""
+    from transcribe import cli
+
+    monkeypatch.setattr(
+        cli, "load_config", lambda: {"destination_directory": "/tmp", "anthropic_api_key": "sk"}
+    )
+    monkeypatch.setattr(sys, "argv", ["transcribe", "categorise"])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+    assert exit_info.value.code == 1
+    assert "--all" in capsys.readouterr().out
+
+
+def test_categorise_all_is_the_way_to_ask_for_everything(monkeypatch, tmp_path):
+    from transcribe import cli
+
+    (tmp_path / "a meeting").mkdir()
+    captured = {}
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda: {"destination_directory": str(tmp_path), "anthropic_api_key": "sk"},
+    )
+    import transcribe.categorise as categorise_mod
+
+    monkeypatch.setattr(
+        categorise_mod,
+        "categorise_folders",
+        lambda folders, config, overwrite=False: captured.update(folders=folders) or 0,
+    )
+    monkeypatch.setattr(sys, "argv", ["transcribe", "categorise", "--all"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    assert len(captured["folders"]) == 1

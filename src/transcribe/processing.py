@@ -93,9 +93,23 @@ def _folder_name_for(meeting, recording_start, notes):
 
 
 def _write_meeting_outputs(
-    meeting, notes, dest_dir, video_file, recording_start, config, split_video
+    meeting,
+    notes,
+    dest_dir,
+    video_file,
+    recording_start,
+    config,
+    split_video,
+    write_transcript=True,
 ):
-    """Write every artifact for one meeting into its own folder."""
+    """Write every artifact for one meeting into its own folder.
+
+    ``write_transcript`` exists for the one caller that built the meeting *from*
+    the transcript in this folder. Re-rendering it there replaces the original
+    with a reconstruction: prose gains a fabricated speaker header and
+    interpolated timestamps that read as measured, and raw whisper output loses
+    its end times. The source is then gone.
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
     written = {"folder": str(dest_dir)}
     source_name = Path(video_file).name
@@ -109,8 +123,9 @@ def _write_meeting_outputs(
     )
     written["notes_html"] = str(dest_dir / "notes.html")
 
-    (dest_dir / "transcript.txt").write_text(render_transcript(meeting), encoding="utf-8")
-    written["transcript"] = str(dest_dir / "transcript.txt")
+    if write_transcript:
+        (dest_dir / "transcript.txt").write_text(render_transcript(meeting), encoding="utf-8")
+        written["transcript"] = str(dest_dir / "transcript.txt")
 
     if notes and notes.get("summary"):
         (dest_dir / "summary.txt").write_text(notes["summary"] + "\n", encoding="utf-8")

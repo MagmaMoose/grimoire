@@ -364,12 +364,17 @@ def _voice_memos(args, selected):
 
 def _print_usage():
     print("Usage:")
-    print("  transcribe <video_file> [--json] [--flat] [--no-split]")
+    print("  transcribe <video_file> [--json] [--flat] [--no-split] [--keep-source]")
     print("                                    - Transcribe a single file")
     print("  transcribe watch [directory]      - Watch directory for new files")
     print("  transcribe setup-daemon           - Install background daemon")
     print("  transcribe autorecord             - Record meetings automatically via OBS")
     print("  transcribe setup-autorecord       - Install the auto-record agent")
+    print("  transcribe notes <folders>        - Write notes from an existing transcript")
+    print("  transcribe categorise <folders>   - Label meetings with categories")
+    print("       --all          every meeting that has none yet")
+    print("       --overwrite    replace categories that are already set")
+    print("  transcribe record start|stop      - Drive an OBS recording")
     print("  transcribe voicememos [--import]  - List/import macOS Voice Memos")
     print("       --debug        show the library schema")
     print("       --all          every memo, not just the last day")
@@ -405,6 +410,7 @@ def main():
         "--flat": "flat",
         "--no-split": "no_split",
         "--no-diarize": "no_diarize",
+        "--keep-source": "keep_source",
     }
     selected = {name for arg, name in flags.items() if arg in argv}
     args = [arg for arg in argv if arg not in flags]
@@ -449,6 +455,66 @@ def main():
         except MenuBarUnavailable as e:
             print(f"✗ {e}")
             sys.exit(1)
+    elif command == "notes":
+        from .from_transcript import generate_for_folders
+
+        config = _apply_flags(load_config(), selected)
+        folders = [a for a in args[1:] if not a.startswith("--")]
+        if not folders:
+            print("Usage: transcribe notes <meeting folder> [more folders]")
+            sys.exit(1)
+        sys.exit(generate_for_folders(folders, config))
+    elif command == "categorise" or command == "categorize":
+        from .categorise import categorise_folders
+
+        config = load_config()
+        folders = [a for a in args[1:] if not a.startswith("--")]
+        if not folders and "--all" not in args:
+            # Running over the whole library is one LLM call per meeting, so it
+            # has to be asked for. Bare "categorise", and anything whose only
+            # arguments are flags, used to do exactly that.
+            print("Usage: transcribe categorise <meeting folder> [more folders]")
+            print("       transcribe categorise --all      every meeting without categories")
+            print("       --overwrite                      replace categories already set")
+            sys.exit(1)
+        if not folders:
+            destination = Path(config["destination_directory"])
+            folders = sorted(str(p) for p in destination.glob("*") if p.is_dir())
+            print(f"Categorising up to {len(folders)} meeting(s) in {destination}")
+        sys.exit(categorise_folders(folders, config, overwrite="--overwrite" in args))
+    elif command == "record":
+        from .autorecord import (
+            ObsUnavailable,
+            connect,
+            is_recording,
+            launch_obs,
+            start_recording,
+            stop_recording,
+        )
+
+        action = args[1] if len(args) > 1 else "status"
+        if action not in {"start", "stop", "status"}:
+            print(f"Unknown action {action!r}. Use: transcribe record start|stop|status")
+            sys.exit(1)
+
+        config = load_config()
+        try:
+            if action == "start":
+                launch_obs()
+            client = connect(config)
+            if action == "start":
+                print("✓ Recording" if start_recording(client) else "Already recording")
+            elif action == "stop":
+                # stop_recording returns the output path, which OBS does not
+                # always report, so it cannot stand in for "did it stop".
+                was_recording = is_recording(client)
+                stop_recording(client)
+                print("✓ Stopped" if was_recording else "Not recording")
+            else:
+                print("recording" if is_recording(client) else "idle")
+        except ObsUnavailable as e:
+            print(f"✗ {e}")
+            sys.exit(1)
     elif command == "watch":
         config = _apply_flags(load_config(), selected)
         directory = args[1] if len(args) > 1 else config["watch_directory"]
@@ -473,6 +539,11 @@ def _apply_flags(config, selected):
         config["split_video"] = False
     if "no_diarize" in selected:
         config["diarization_enabled"] = False
+    if "keep_source" in selected:
+        # Leave the recording where it is. Reprocessing a meeting's own media
+        # would otherwise move it out of the folder being reprocessed and into
+        # whichever new folder the run produced.
+        config["move_source_video"] = False
     return config
 
 

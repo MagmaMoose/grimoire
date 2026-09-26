@@ -101,12 +101,7 @@ struct MeetingRecord: Codable, Sendable {
 
         /// An owner the pipeline could not determine is written as
         /// "Unassigned"; the view should show that as absent, not as a person.
-        var assignedOwner: String? {
-            let trimmed = owner.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty, trimmed.caseInsensitiveCompare("Unassigned") != .orderedSame
-            else { return nil }
-            return trimmed
-        }
+        var assignedOwner: String? { Owner.named(owner) }
     }
 
     struct Correction: Codable, Sendable, Identifiable {
@@ -203,5 +198,20 @@ enum PipelineDate {
             return date
         }
         return decoder
+    }
+}
+
+
+/// Who owns an action item.
+///
+/// The pipeline writes "Unassigned" when it could not tell, and both the record
+/// and the index needed to turn that back into "nobody". It was written out
+/// twice, verbatim.
+enum Owner {
+    static func named(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed.caseInsensitiveCompare("Unassigned") != .orderedSame
+        else { return nil }
+        return trimmed
     }
 }
