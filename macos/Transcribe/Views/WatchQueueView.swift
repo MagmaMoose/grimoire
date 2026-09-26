@@ -10,7 +10,6 @@ struct WatchQueueView: View {
     @Environment(Settings.self) private var settings
     @Environment(Automation.self) private var automation
 
-    private var automatic: Bool { settings.config.bool(ConfigKey.autoProcess, default: true) }
     private var processed: [PendingRecording] { queue.recordings.filter(\.isProcessed) }
 
     var body: some View {
@@ -36,7 +35,14 @@ struct WatchQueueView: View {
                         }
                         ForEach(queue.pending) { RecordingRow(recording: $0) }
                     } header: {
-                        Text("Waiting")
+                        HStack {
+                            Text("Waiting")
+                            Spacer()
+                            if queue.pending.count > 1 {
+                                Button("Process All") { automation.processAllWaiting() }
+                                    .help("Queue every waiting recording, oldest first")
+                            }
+                        }
                     }
 
                     if !processed.isEmpty {
@@ -101,7 +107,7 @@ private struct AutomationBanner: View {
                     .fontWeight(.medium)
                 Text(
                     automatic
-                        ? "A recording is picked up once it has stopped growing for 30 seconds, and filed with its notes."
+                        ? "A new recording is picked up once it has stopped growing for 30 seconds, and filed with its notes."
                         : "Recordings wait here until you process them."
                 )
                 .font(.callout)

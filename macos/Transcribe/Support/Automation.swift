@@ -23,6 +23,10 @@ final class Automation {
 
     private var attempted: Set<URL> = []
     private var notesAttempted: Set<URL> = []
+    /// Recordings older than this are left for the user. The watch folder
+    /// defaults to ~/Movies, and switching this on must not transcribe every
+    /// video already in it; only what arrives from then on is processed.
+    private(set) var processingSince: Date = .distantFuture
     private var lastSeen: [URL: Snapshot] = [:]
     private var lastVoiceMemos: Date?
     private var lastReminders: Date?
@@ -75,8 +79,17 @@ final class Automation {
         self.monitor = monitor
     }
 
+    /// Where the start of automatic processing is remembered across launches.
+    static let processingSinceKey = "autoProcessSince"
+
     func start() {
         guard timer == nil else { return }
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: Self.processingSinceKey) == nil {
+            defaults.set(Date(), forKey: Self.processingSinceKey)
+        }
+        processingSince = defaults.object(forKey: Self.processingSinceKey) as? Date ?? Date()
+
         pipeline.onCompletion = { [weak self] completion in self?.handle(completion) }
         completions.onChange = { [weak self] key, done in self?.reminders.push(key: key, done: done) }
 
@@ -153,7 +166,9 @@ final class Automation {
             let snapshot = Snapshot(size: recording.size, modified: recording.modified)
             seen[recording.url] = snapshot
             let previous = lastSeen[recording.url].map { (size: $0.size, modified: $0.modified) }
-            guard enabled, Self.isSettled(recording, previous: previous, now: now) else { continue }
+            guard enabled, Self.isNew(recording, since: processingSince),
+                Self.isSettled(recording, previous: previous, now: now)
+            else { continue }
             guard !attempted.contains(recording.url), pipeline.job(for: recording.url) == nil
             else { continue }
             // Transcribing is heavy enough to make a live recording drop frames.
@@ -175,6 +190,12 @@ final class Automation {
         return now.timeIntervalSince(modified) >= settleSeconds
     }
 
+    /// True when a recording arrived after automatic processing began.
+    nonisolated static func isNew(_ recording: PendingRecording, since start: Date) -> Bool {
+        guard let modified = recording.modified else { return false }
+        return modified >= start
+    }
+
     /// Where a waiting recording stands, in words, for the queue.
     func status(of recording: PendingRecording) -> String? {
         if let job = pipeline.job(for: recording.url) {
@@ -182,8 +203,24 @@ final class Automation {
         }
         if let failure = failures[recording.url] { return failure }
         guard settings.config.bool(ConfigKey.autoProcess, default: true) else { return nil }
+        guard Self.isNew(recording, since: processingSince) else {
+            return "Was here before automatic processing, so it waits for you"
+        }
         if monitor.status == .recording { return "Waits until the recording stops" }
         return attempted.contains(recording.url) ? nil : "Waiting for the file to finish writing"
+    }
+
+    /// Queue every waiting recording, oldest first: the backlog that was there
+    /// before automatic processing, in one click rather than one per file.
+    func processAllWaiting() {
+        let waiting = queue.pending
+            .filter { pipeline.job(for: $0.url) == nil }
+            .sorted { ($0.modified ?? .distantPast) < ($1.modified ?? .distantPast) }
+        for recording in waiting {
+            failures[recording.url] = nil
+            attempted.insert(recording.url)
+            pipeline.process(recording.url, automatic: true)
+        }
     }
 
     /// Run a recording again after it failed or was cancelled.

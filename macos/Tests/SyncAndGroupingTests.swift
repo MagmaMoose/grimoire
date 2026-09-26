@@ -344,6 +344,18 @@ struct SettlingTests {
         let empty = recording(size: 0, writtenAgo: 600)
         #expect(!Automation.isSettled(empty, previous: (0, empty.modified), now: now))
     }
+
+    /// The watch folder defaults to ~/Movies. Switching automatic processing on
+    /// must not transcribe every video already in it.
+    @Test("only recordings that arrive afterwards are processed on their own")
+    func onlyNewOnes() {
+        let switchedOn = now.addingTimeInterval(-3600)
+        #expect(Automation.isNew(recording(size: 1, writtenAgo: 60), since: switchedOn))
+        #expect(!Automation.isNew(recording(size: 1, writtenAgo: 7200), since: switchedOn))
+        let undated = PendingRecording(
+            url: URL(filePath: "/w/b.mov"), size: 1, modified: nil, processedInto: [])
+        #expect(!Automation.isNew(undated, since: switchedOn))
+    }
 }
 
 @Suite("OBS")
