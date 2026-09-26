@@ -4,18 +4,35 @@ A native SwiftUI app over the meeting folders the pipeline writes.
 
 ## What it does
 
-* **Meetings** grouped by month, with categories, and search across every
-  transcript rather than just titles. A result opens the meeting and seeks the
-  recording to the line that matched.
+* **Meetings** grouped by month, by category, or by a field of your own such as
+  Company or Project, and search across every transcript rather than just
+  titles. A result opens the meeting and seeks the recording to the line that
+  matched.
 * **Notes, transcript and recording** side by side. Any timestamp seeks the
   media. Audio-only recordings get a compact transport, not a black rectangle.
-* **Action items** from every meeting in one list, by owner, with a done state,
-  exportable to Reminders.
+* **Action items** from every meeting in one list, by owner, kept in step with a
+  Reminders list.
 * **Recording queue** showing what is in the watch folder and whether it became
-  a meeting.
-* **Menu bar** item showing whether a meeting is detected, with a manual
-  override.
+  a meeting, with new recordings processed as they arrive.
+* **Auto-record**, driving OBS itself, with the state and any error shown in the
+  main window as well as the menu bar.
 * **Every setting** the CLI reads, editable.
+
+## Without being asked
+
+Each of these has a switch under Settings > General, and runs with the app open
+or only in the menu bar:
+
+* **New recordings** in the watch folder are processed once they have stopped
+  growing for 30 seconds. Nothing starts while a recording is under way.
+* **Missing notes** are written for meetings from the last two weeks that have a
+  transcript and none, usually because the provider failed on the first run. A
+  meeting still called "Meeting 1" is renamed after its notes' title.
+* **New Voice Memos** are imported every ten minutes, each once, from a copy, so
+  the memo stays in Voice Memos. This needs Full Disk Access for Transcribe.
+
+Runs go through one queue, one at a time. A click on Write Notes goes to the
+front of it rather than stopping what is running.
 
 ## Generating notes
 
@@ -34,8 +51,17 @@ meetings the audio is gone entirely, so the transcript is the only route.
 
 ## Apple Notes and Reminders
 
-Reminders uses EventKit, which is a real API with a real permission: action
-items become reminders carrying the meeting title and a path back to its folder.
+Reminders is the task list; the app does not try to be one. Once connected,
+action items from the last 30 days go into a Reminders list ("Meetings" unless
+you pick another), yours and unassigned ones by default. Each carries the
+meeting it came from and a link to its folder.
+
+`~/.transcribe/reminders.json` records which reminder stands for which action,
+and whether it was done when the two sides last agreed. That is what makes it a
+sync rather than an export: nothing is added twice, and whichever side changed
+since then wins, so a tick in Reminders ticks the action here and the reverse.
+Deleting a reminder counts as done and it is not added again. A small ref in
+each reminder's notes finds it again if the ledger is lost.
 
 Notes has no public API, so a note is filed by driving the Notes app with
 AppleScript. The note body is written to a file that the script reads; it is
@@ -70,10 +96,16 @@ interface. The app reads it and never imports anything Python. Folders without
 one still appear, showing whatever transcript and summary they hold, because
 they are most of an existing library.
 
-Everything that *does* work — writing notes, categorising, processing a queued
-recording, starting and stopping OBS — shells out to the `transcribe` CLI rather
-than reimplementing it, so there is one implementation and one set of settings
-behind both. The CLI is looked up in the usual Homebrew locations.
+Everything that does work (writing notes, categorising, processing a queued
+recording, importing Voice Memos) shells out to the `transcribe` CLI rather than
+reimplementing it, so there is one implementation and one set of settings behind
+both. The CLI is looked up in the usual Homebrew locations. It exits non-zero
+when a run fails, 75 when another `transcribe` process already has the file,
+and 77 when it needs a permission, and the app reports each differently.
+
+OBS is the exception. The app speaks obs-websocket itself, because the Homebrew
+build of the CLI does not bundle the websocket client and every automatic start
+through it failed.
 
 Settings live in `~/.transcribe/config.yaml`, the same file the CLI reads. Edits
 are line-surgical, so comments and anything the app does not model survive.
@@ -108,10 +140,18 @@ carries the automation entitlement that the hardened runtime requires for the
 Notes export, so the remaining work to hand this to someone else is a Developer
 ID, `ENABLE_HARDENED_RUNTIME`, and notarisation.
 
-## Not built yet
+## Auto-record
 
-Automatic recording. The menu bar shows what the detector sees and can start or
-stop OBS by hand, but the start/stop *timing* still lives in `transcribe
-autorecord`. Detection itself is native here, which is what puts the microphone
-and camera grants on Transcribe rather than on whichever terminal launched the
-CLI.
+A meeting is the microphone plus one corroborating signal: the camera, or a
+calendar event happening now. Detection is native, which is what puts the
+microphone, camera and calendar grants on Transcribe rather than on whichever
+terminal launched the CLI. Calendar access is asked for from Settings > Recording
+or the menu bar; without it, a meeting joined with the camera off is never seen.
+
+On macOS 14.2 and later the app also asks CoreAudio which processes hold the
+microphone, and ignores OBS. OBS keeps the microphone open for as long as it
+runs, which otherwise kept every recording going and made an idle OBS during
+any calendar event look like a meeting.
+
+Each start sets OBS's recording folder to the watch folder, so the file lands
+where the queue picks it up.
