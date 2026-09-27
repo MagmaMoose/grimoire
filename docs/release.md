@@ -53,7 +53,7 @@ transcribe --help
 System dependencies for local runs:
 
 ```bash
-brew install whisper.cpp ffmpeg
+brew install whisper-cpp ffmpeg
 ```
 
 ## Building a binary locally

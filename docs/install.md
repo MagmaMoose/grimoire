@@ -88,16 +88,16 @@ transcribe doctor
 The Whisper ggml model is **downloaded automatically** the first time you transcribe, to
 `~/.whisper-models/ggml-<model>.bin`. No manual download step is needed.
 
-The model is chosen by the `whisper_model` config key (default `base`):
+The model is chosen by the `whisper_model` config key (default `large-v3-turbo`):
 
 | Model | Size | Notes |
 | --- | --- | --- |
 | `tiny` | ~75 MB | Fastest, lowest quality |
-| `base` | ~142 MB | Good balance (default) |
+| `base` | ~142 MB | Good balance |
 | `small` | ~466 MB | Better quality, slower |
 | `medium` | ~1.5 GB | High quality, much slower |
 | `large-v3` | ~3 GB | Best quality, slowest |
-| `large-v3-turbo` | ~1.6 GB | Near-large quality, much faster |
+| `large-v3-turbo` | ~1.6 GB | Near-large quality, much faster (default) |
 
 To pre-fetch a model manually (optional):
 
