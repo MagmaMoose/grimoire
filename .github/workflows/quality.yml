@@ -64,7 +64,7 @@ jobs:
       # v1.9.5 red on both; v1.9.7 gives chargate 99.3% patch coverage and diatreme
       # a clean skip. v1.11.0's change gives mcp 96.6% on #1's diff, and installed
       # Node on firefly-amd64 (MagmaMoose/mcp#3).
-      - uses: magmamoose/brimyr@93d69be544fd2e6ad54d0eefb1866ce9f175afd9 # v1.11.0
+      - uses: magmamoose/brimyr@5fb49c26d5474490962ce9e9ed12dc4d245263f3 # v1.11.1
         with:
           # `threshold` is deliberately absent: 80 is the action's own default, and
           # naming it here would be a second place to keep in sync with the tool.
