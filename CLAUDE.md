@@ -85,6 +85,8 @@ platform guards so the suite is cross-platform).
 | `from_transcript.py` | Notes from a folder's existing transcript; retitles placeholder folders |
 | `categorise.py` | Categories and `group_fields` in `tags.json`; `transcribe tag` |
 | `actions.py` | Action items across meetings; done state shared with the app |
+| `teams.py` | `transcribe import`: Teams transcripts (.vtt/.docx/.txt) to timed, attributed segments |
+| `digest.py` | `transcribe digest`: notes across a date range, filters, rollup, stable JSON |
 | `search.py` | `transcribe search` over transcripts and notes |
 | `tidy.py` | Files processed recordings left in the watch folder |
 | `locks.py` | `flock` claims so the app and the watcher never process one file twice |

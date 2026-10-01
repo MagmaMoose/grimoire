@@ -9,6 +9,8 @@ Usage:
   transcribe setup-autorecord       - Install the auto-record agent
   transcribe voicememos [--import]  - List/import macOS Voice Memos
   transcribe notes <folders>        - Write notes from an existing transcript
+  transcribe import <files>         - Import Teams transcripts (.vtt, .docx, .txt)
+  transcribe digest                 - Every meeting's notes in a date range
   transcribe actions                - List and tick off action items
   transcribe search <words>         - Search every transcript
   transcribe tag <folder>           - Show or change categories and fields
@@ -371,6 +373,15 @@ def _print_usage():
     print("  transcribe notes <folders>        - Write notes from an existing transcript")
     print("       --missing      every meeting with a transcript and no notes")
     print("       --since-days=N only meetings from the last N days")
+    print("  transcribe import <files>         - Import Teams transcripts (.vtt, .docx, .txt)")
+    print('       --title="..."  name the meeting; --at="YYYY-MM-DD HH:MM" when it began')
+    print("  transcribe digest                 - Every meeting's notes in a date range")
+    print("       --from=YYYY-MM-DD --to=YYYY-MM-DD   (default: the last 7 days)")
+    print("       --field NAME=VALUE  only meetings tagged so, e.g. Company=Acme")
+    print("       --category NAME / --attendee NAME   more filters")
+    print("       --rollup       add one summary of all the summaries (one LLM call)")
+    print("       --json         the stable machine-readable shape")
+    print("       --out FILE     write to a file instead of the terminal")
     print("  transcribe categorise <folders>   - Label meetings with categories")
     print("       --all          every meeting that has none yet")
     print("       --overwrite    replace categories that are already set")
@@ -488,6 +499,17 @@ def main():
             print("       transcribe notes --missing [--since-days=N]")
             sys.exit(1)
         sys.exit(generate_for_folders(folders, config))
+    elif command == "import":
+        from .teams import run_import
+
+        sys.exit(run_import(args[1:], _apply_flags(load_config(), selected)))
+    elif command == "digest":
+        from .digest import run as run_digest
+
+        # --json was stripped above as the global write-notes.json flag; here it
+        # asks for the digest as JSON, so it has to be handed back.
+        own = [*args[1:], "--json"] if "write_json" in selected else args[1:]
+        sys.exit(run_digest(own, load_config()))
     elif command == "actions":
         from .actions import run as run_actions
 
