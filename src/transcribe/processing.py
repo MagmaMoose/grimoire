@@ -193,23 +193,36 @@ def segments_from_text(text, duration=None):
 
 
 def process_transcript(
-    audio_file, transcript, config=None, title=None, recorded_at=None, duration=None
+    audio_file,
+    transcript,
+    config=None,
+    title=None,
+    recorded_at=None,
+    duration=None,
+    segments=None,
+    source=None,
 ):
     """Run the notes pipeline over an already-transcribed recording.
 
-    Used for sources that transcribe themselves, such as Voice Memos. Whisper is
-    skipped; everything downstream (meeting notes, rendering, filing, Slack) is
-    the same code path as a video.
+    Used for sources that transcribe themselves, such as Voice Memos and Teams
+    transcript exports. Whisper is skipped; everything downstream (meeting notes,
+    rendering, filing, Slack) is the same code path as a video.
+
+    ``segments`` carries a transcript whose timing and speakers the source
+    measured (a Teams export); without it, ``transcript`` is plain text spread
+    evenly over the duration. ``source`` names the file the transcript came from
+    when there is no audio.
     """
     config = config or load_config()
     audio_file = os.path.abspath(audio_file) if audio_file else None
 
     print(f"\n{'=' * 60}")
-    name = Path(audio_file).name if audio_file else (title or "recording")
+    origin = source or audio_file
+    name = Path(origin).name if origin else (title or "recording")
     print(f"Processing: {name}")
     print(f"{'=' * 60}\n")
 
-    if not (transcript or "").strip():
+    if not segments and not (transcript or "").strip():
         print("No transcript supplied; nothing to do.")
         return []
 
@@ -218,24 +231,29 @@ def process_transcript(
     if recorded_at is None and audio_file:
         recorded_at = recording_started_at(audio_file)
 
-    segments = segments_from_text(transcript, duration)
-    print(f"✓ Using supplied transcript ({len(transcript.split()):,} words)")
+    measured = bool(segments)
+    if measured:
+        words = sum(len(s.text.split()) for s in segments)
+        print(f"✓ Using supplied transcript ({words:,} words, timed and attributed)")
+    else:
+        segments = segments_from_text(transcript, duration)
+        print(f"✓ Using supplied transcript ({len(transcript.split()):,} words)")
 
     meeting = Meeting(index=1, start=0.0, end=segments[-1].end, segments=segments, title=title)
+    meeting.timings_are_measured = measured
 
     if not is_configured(config):
         notes = None
         print("  Notes skipped (no LLM provider configured)")
     else:
-        # Timestamps here are interpolated, so the model is told not to cite them.
-        notes = generate_notes(
-            meeting,
-            config,
-            extra_context=(
-                "This transcript came from an external transcription service and has no "
-                "reliable per-sentence timing. Do not cite timestamps."
-            ),
+        # Interpolated timestamps must not be cited; measured ones may be.
+        context = (
+            "This transcript was exported from Microsoft Teams, which named the speakers."
+            if measured
+            else "This transcript came from an external transcription service and has no "
+            "reliable per-sentence timing. Do not cite timestamps."
         )
+        notes = generate_notes(meeting, config, extra_context=context)
         if notes:
             meeting.title = notes.get("title") or meeting.title
             meeting.notes = notes
@@ -246,7 +264,7 @@ def process_transcript(
     base_dest = Path(config.get("destination_directory") or Path(audio_file or ".").parent)
     folder = _unique_folder(base_dest, _folder_name_for(meeting, recorded_at, notes))
     written = _write_meeting_outputs(
-        meeting, notes, folder, audio_file or name, recorded_at, config, split_video=False
+        meeting, notes, folder, origin or name, recorded_at, config, split_video=False
     )
     if notes:
         categorise_quietly(folder, config)
