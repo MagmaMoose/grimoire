@@ -352,7 +352,7 @@ You are only charged for what is actually generated. If notes come back empty, r
 
 | Extra | Installs | Enables |
 | --- | --- | --- |
-| `diarize` | `sherpa-onnx`, `numpy` | Speaker attribution |
+| `diarize` | `sherpa-onnx`, `sherpa-onnx-core`, `numpy` | Speaker attribution |
 | `calendar` | `pyobjc-framework-EventKit` | Meeting titles and attendees from Calendar |
 | `gdrive` | `google-auth`, `google-api-python-client` | Google Drive folder links in Slack |
 | `all` | all of the above | |

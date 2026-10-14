@@ -406,3 +406,12 @@ def test_voice_memos_listing_marks_imported_ones(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         main()
     assert "imported  Budget" in capsys.readouterr().out
+
+
+def test_importable_rejects_a_package_that_fails_to_load(monkeypatch, tmp_path):
+    pkg = tmp_path / "broken_native"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("raise ImportError('Library not loaded: libfoo.dylib')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    assert not cli._importable("broken_native")
+    assert cli._importable("json")
