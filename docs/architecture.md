@@ -299,7 +299,7 @@ Optional extras:
 
 | Extra | Packages | Purpose |
 | --- | --- | --- |
-| `diarize` | `sherpa-onnx`, `numpy` | Speaker attribution |
+| `diarize` | `sherpa-onnx`, `sherpa-onnx-core`, `numpy` | Speaker attribution |
 | `calendar` | `pyobjc-framework-EventKit` | Meeting titles and attendees |
 | `gdrive` | `google-auth`, `google-api-python-client` | Drive folder links |
 | `autorecord` | `obsws-python` | OBS-based auto-recording agent |

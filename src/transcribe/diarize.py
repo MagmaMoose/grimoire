@@ -139,7 +139,8 @@ def diarize_window(audio_path, config=None, start=0.0, end=None, num_speakers=No
         import sherpa_onnx
     except ImportError as e:
         raise DiarizationUnavailable(
-            "sherpa-onnx is not installed. Install with: pip install 'transcribe[diarize]'"
+            f"sherpa-onnx could not be imported ({str(e).splitlines()[0]}). "
+            "Install with: pip install 'transcribe[diarize]'"
         ) from e
 
     segmentation_model, embedding_model = ensure_models(config.get("diarization_model_dir"))
