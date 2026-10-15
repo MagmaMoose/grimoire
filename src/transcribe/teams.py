@@ -26,6 +26,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
 import defusedxml.ElementTree as ElementTree
 
 from .segments import Segment
@@ -177,7 +178,8 @@ def parse_lines(lines: list[str]) -> tuple[list[Segment], list[str]]:
 
 def docx_lines(path: Path) -> list[str]:
     """Paragraph texts of a .docx, in order."""
-    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"  # DevSkim: ignore DS137138 - OOXML namespace URI, never used as a network address
+    # DevSkim: ignore DS137138 - OOXML namespace URI, not a network address
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
     with zipfile.ZipFile(path) as z:
         root = ElementTree.fromstring(z.read("word/document.xml"))
     lines = []
