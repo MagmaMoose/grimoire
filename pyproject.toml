@@ -31,7 +31,9 @@ gdrive = [
 ]
 # Local speaker attribution. ONNX only -- no PyTorch, no model gating.
 diarize = [
-    "sherpa-onnx>=1.10.0",
+    "sherpa-onnx>=1.13.8",
+    # Ships libonnxruntime; uv drops it from the lock because sherpa-onnx's armv7l wheels omit it.
+    "sherpa-onnx-core>=1.13.8",
     "numpy>=1.24",
 ]
 # macOS Calendar lookup for meeting titles and attendee lists.

@@ -71,7 +71,7 @@ pip install 'transcribe[diarize,calendar]'
 
 | Extra | Installs | Enables |
 | --- | --- | --- |
-| `diarize` | `sherpa-onnx`, `numpy` | Telling speakers apart (~46 MB of models, no PyTorch) |
+| `diarize` | `sherpa-onnx`, `sherpa-onnx-core`, `numpy` | Telling speakers apart (~46 MB of models, no PyTorch) |
 | `calendar` | `pyobjc-framework-EventKit` | Meeting titles and attendee lists from Calendar |
 | `gdrive` | `google-auth`, `google-api-python-client` | Google Drive folder links in Slack |
 | `all` | all of the above | |

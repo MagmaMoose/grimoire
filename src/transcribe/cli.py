@@ -150,10 +150,12 @@ def doctor():
 
 def _importable(module_name):
     """True when ``module_name`` can be imported."""
-    import importlib.util
+    import importlib
 
+    # A real import, not find_spec: a package can be present with a native library missing.
     try:
-        return importlib.util.find_spec(module_name) is not None
+        importlib.import_module(module_name)
+        return True
     except (ImportError, ValueError):
         return False
 

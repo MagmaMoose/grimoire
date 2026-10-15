@@ -140,6 +140,16 @@ def test_diarize_meeting_degrades_when_unavailable(monkeypatch):
     assert meeting.segments[0].speaker is None
 
 
+def test_diarize_window_reports_the_import_error(monkeypatch):
+    import sys
+
+    import transcribe.diarize as diarize_mod
+
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", None)
+    with pytest.raises(diarize_mod.DiarizationUnavailable, match="import of sherpa_onnx halted"):
+        diarize_mod.diarize_window("/audio.wav")
+
+
 def test_diarize_meeting_survives_unexpected_errors(monkeypatch):
     import transcribe.diarize as diarize_mod
 
