@@ -243,9 +243,10 @@ def _complete(config, system, user, max_tokens, temperature):
     Returns the generated text, or None if no key is configured for the
     selected provider (graceful skip, matching the original behavior).
     """
-    api_key = api_key_for(config)
-    if not api_key:
+    # A bearer token leaves api_key empty, so the credential check has to cover both shapes.
+    if not is_configured(config):
         return None
+    api_key = api_key_for(config)
     model = _model_for(config)
     backend = _openai_complete if _provider(config) == "openai" else _anthropic_complete
     return backend(system, user, api_key, model, max_tokens, temperature, _client_options(config))
@@ -253,9 +254,9 @@ def _complete(config, system, user, max_tokens, temperature):
 
 def complete_json(config, system, user, schema, max_tokens=8000, temperature=0.2):
     """Dispatch a schema-constrained completion, returning a dict (or None)."""
-    api_key = api_key_for(config)
-    if not api_key:
+    if not is_configured(config):
         return None
+    api_key = api_key_for(config)
     model = _model_for(config)
     backend = _openai_complete_json if _provider(config) == "openai" else _anthropic_complete_json
     options = _client_options(config)

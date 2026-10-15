@@ -370,3 +370,14 @@ def test_openai_provider_never_sends_a_bearer_token():
     cfg = {"llm_provider": "openai", "openai_api_key": "sk-1", "anthropic_auth_token": "t"}
     assert llm.auth_token_for(cfg) == ""
     assert "auth_token" not in llm._client_options(cfg)
+
+
+def test_complete_json_runs_on_a_bearer_token_alone(fake_anthropic, base_config):
+    """An OAuth token leaves api_key_for empty; the call must still be made."""
+    base_config["llm_provider"] = "claude"
+    base_config["anthropic_api_key"] = ""
+    base_config["anthropic_auth_token"] = "sk-ant-oat-xyz"
+    complete_json(base_config, "s", "u", {"type": "object"})
+    assert len(fake_anthropic["calls"]) == 1
+    assert fake_anthropic["init_keys"] == [None]
+    assert fake_anthropic["init_options"][0]["auth_token"] == "sk-ant-oat-xyz"

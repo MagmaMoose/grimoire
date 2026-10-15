@@ -1,6 +1,8 @@
 """Tests for transcribe.processing: file moves, JSON output, LLM gating."""
 
 import json
+from datetime import datetime
+from pathlib import Path
 
 from transcribe import processing
 from transcribe.processing import (
@@ -385,3 +387,37 @@ def test_a_failed_move_is_reported_not_raised(tmp_path, capsys):
     )
     assert moved is None
     assert "could not move source recording" in capsys.readouterr().out
+
+
+def test_process_transcript_keeps_measured_segments(monkeypatch, tmp_path, base_config):
+    """A Teams export arrives timed and attributed; nothing may re-time or rename it."""
+    from transcribe.segments import Segment
+
+    base_config["destination_directory"] = str(tmp_path)
+    seen = {}
+
+    def fake_notes(meeting, config, extra_context=None):
+        seen["context"] = extra_context
+        seen["measured"] = meeting.timings_are_measured
+        return {"title": "Sprint review", "summary": "Shipped."}
+
+    monkeypatch.setattr(processing, "is_configured", lambda config: True)
+    monkeypatch.setattr(processing, "generate_notes", fake_notes)
+    monkeypatch.setattr(processing, "categorise_quietly", lambda folder, config: None)
+    segments = [Segment(3.0, 8.0, "Morning.", "Alex Writer"), Segment(9.0, 12.0, "Hi.", "Sam")]
+    out = processing.process_transcript(
+        None,
+        None,
+        base_config,
+        title="Review",
+        recorded_at=datetime(2026, 9, 14, 9, 30),
+        segments=segments,
+        source=str(tmp_path / "Review.vtt"),
+    )
+    assert seen["measured"] is True
+    assert "Microsoft Teams" in seen["context"]
+    folder = Path(out[0]["folder"])
+    assert folder.name == "2026-09-14 0930 Sprint review"
+    payload = json.loads((folder / "notes.json").read_text(encoding="utf-8"))
+    assert payload["source_file"].endswith("Review.vtt")
+    assert [s["speaker"] for s in payload["segments"]] == ["Alex Writer", "Sam"]
