@@ -87,7 +87,7 @@ def _docx(path, lines):
     )
     xml = (
         '<?xml version="1.0"?><w:document xmlns:w='
-        '"http://schemas.openxmlformats.org/wordprocessingml/2006/main">'  # nosemgrep: DS137138 -- namespace identifier
+        '"http://schemas.openxmlformats.org/wordprocessingml/2006/main">'  # DevSkim: ignore DS137138 - OOXML namespace URI
         f"<w:body>{body}</w:body></w:document>"
     )
     with zipfile.ZipFile(path, "w") as z:

@@ -177,7 +177,7 @@ def parse_lines(lines: list[str]) -> tuple[list[Segment], list[str]]:
 
 def docx_lines(path: Path) -> list[str]:
     """Paragraph texts of a .docx, in order."""
-    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"  # nosemgrep: DS137138 -- namespace identifier, not a network address
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"  # DevSkim: ignore DS137138 - OOXML namespace URI, never used as a network address
     with zipfile.ZipFile(path) as z:
         root = ElementTree.fromstring(z.read("word/document.xml"))
     lines = []
