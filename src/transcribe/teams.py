@@ -304,4 +304,4 @@ def run_import(args, config) -> int:
             segments=got.segments,
             source=str(got.path.resolve()),
         )
-    return 1 if failed and failed == len(files) else 0
+    return 1 if failed else 0
