@@ -85,10 +85,9 @@ def _docx(path, lines):
         + "</w:r></w:p>"
         for line in lines
     )
-    # DevSkim: ignore DS137138 - OOXML namespace URI, not a network address
     xml = (
         '<?xml version="1.0"?><w:document xmlns:w='
-        '"http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '"http://schemas.openxmlformats.org/wordprocessingml/2006/main">'  # DevSkim: ignore DS137138  # noqa: E501
         f"<w:body>{body}</w:body></w:document>"
     )
     with zipfile.ZipFile(path, "w") as z:
