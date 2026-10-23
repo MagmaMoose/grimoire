@@ -197,6 +197,9 @@ transcribe voicememos               # list recent Voice Memos, and which were im
 transcribe voicememos --import      # import the ones not imported yet (--force for all)
 transcribe notes <folder>           # write notes from a transcript a folder already has
 transcribe notes --missing          # ...for every meeting that has none (--since-days=N)
+transcribe import call.vtt          # a Teams transcript (.vtt, .docx or pasted .txt) becomes a meeting
+transcribe digest --from=2026-09-11 --to=2026-10-05   # every meeting's notes in a range
+transcribe digest --field Company=Acme --rollup        # one client's meetings, plus a summary of them all
 transcribe actions                  # outstanding action items across every meeting
 transcribe actions --mine           # only yours and unassigned ones (needs user_name)
 transcribe actions done <ref>       # tick one off; the macOS app sees it too
@@ -218,6 +221,21 @@ transcribe mic                      # show inputs, cameras, and whether it would
 A failed run exits non-zero, and a recording another `transcribe` process is already working
 on exits `75` and is left to that process, so the launchd watcher and the macOS app never
 file the same recording twice.
+
+### Teams transcripts and digests
+
+Where a tenant switches off Graph access to Teams transcripts, download the transcript from
+Teams or Stream (`.vtt` or `.docx`) and run `transcribe import` on it. Teams has already
+named the speakers and timed every line, so whisper, diarisation and speaker naming are
+skipped and the speaker names are kept. The meeting is dated from the file name, then from
+the document's header, then from the file's own time; `--at="2026-09-14 12:45"` overrides
+all three.
+
+`transcribe digest` reads the notes every meeting already has, so selecting a range costs
+nothing. Filter with `--field NAME=VALUE` (the grouping fields from `transcribe tag`),
+`--category` and `--attendee`. `--rollup` adds a summary of the summaries in one more LLM
+call over the notes, never the transcripts. `--json` prints a stable shape
+(`"version": 1`) for other tools to read.
 
 ## How the pieces work
 

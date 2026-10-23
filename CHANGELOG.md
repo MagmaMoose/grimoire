@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`transcribe import`** turns a Microsoft Teams transcript (`.vtt`, `.docx`, or text
+  pasted from the transcript pane) into a meeting with notes. Teams' own speaker names
+  and timings are kept, so whisper, diarisation and speaker naming are skipped. For tenants
+  that switch off Graph access to transcripts, this is the way in.
+- **`transcribe digest`** lists the notes of every meeting in a date range, filtered by
+  grouping field, category or attendee. `--rollup` adds one summary of the summaries, and
+  `--json` prints a stable shape for other tools.
 - **Meeting detection**: one recording is split into the separate meetings it contains,
   combining calendar events, silence gaps, and LLM judgement. Each meeting gets its own
   folder named after the meeting.
@@ -77,6 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whisper's JSON output to preserve timestamps.
 
 ### Fixed
+- A config with only an Anthropic OAuth token (`anthropic_auth_token`, or an `sk-ant-oat`
+  key) passed the "configured" check and then silently skipped every LLM call. Both call
+  paths now accept either credential shape.
 - Diarization no longer over-segments. The upstream clustering threshold of 0.5 reported
   36 distinct "speakers" in a 15-minute sample of a real meeting; the default is now 0.8,
   which reported a plausible 6. Micro-clusters are dropped proportionally rather than by a
